@@ -1,8 +1,11 @@
 // sesmesh: mesh output; see io.h.
 #include "io.h"
 
+#include "parallel.h"
+
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <stdexcept>
@@ -42,16 +45,16 @@ void write_lines( FILE* f, long n, F&& line ) {
    for ( long c0 = 0; c0 < nchunks; c0 += batch ) {
       const long c1 = std::min( nchunks, c0 + batch );
       std::vector<std::string> out( c1 - c0 );
-#pragma omp parallel for schedule( dynamic, 1 )
-      for ( long c = c0; c < c1; ++c ) {
-         std::string& s = out[c - c0];
+      parallel_for( c1 - c0, [&]( long kc, int ) {
+         const long c = c0 + kc;
+         std::string& s = out[kc];
          char buf[LINE];
          const long i1 = std::min( n, ( c + 1 ) * chunk );
          for ( long i = c * chunk; i < i1; ++i ) {
             int k = line( i, buf );
             s.append( buf, size_t( std::max( 0, std::min( k, LINE - 1 ) ) ) );
          }
-      }
+      } );
       for ( const std::string& s : out ) {
          std::fwrite( s.data(), 1, s.size(), f );
       }
@@ -94,8 +97,7 @@ bool number_edges_closed( const Mesh& m, std::vector<long>& eid, std::vector<std
    }
    eid.assign( 3 * nt, 0 );
    edges.resize( base[nt] );
-#pragma omp parallel for schedule( static )
-   for ( long t = 0; t < nt; ++t ) {
+   parallel_for( nt, [&]( long t, int ) {
       long id = base[t];
       for ( int k = 0; k < 3; ++k ) {
          int a = m.tri[t][k], b = m.tri[t][( k + 1 ) % 3];
@@ -104,11 +106,10 @@ bool number_edges_closed( const Mesh& m, std::vector<long>& eid, std::vector<std
             eid[3 * t + k] = ++id;
          }
       }
-   }
-   std::vector<char> matched( base[nt], 0 );
-   long bad = 0;
-#pragma omp parallel for schedule( static ) reduction( + : bad )
-   for ( long t = 0; t < nt; ++t ) {
+   }, 4096 );
+   std::vector<std::atomic<char>> matched( base[nt] );
+   std::vector<long> bad_t( threads(), 0 );
+   parallel_for( nt, [&]( long t, int thread ) {
       for ( int k = 0; k < 3; ++k ) {
          int a = m.tri[t][k], b = m.tri[t][( k + 1 ) % 3];
          if ( a < b ) {
@@ -125,19 +126,19 @@ bool number_edges_closed( const Mesh& m, std::vector<long>& eid, std::vector<std
             }
          }
          if ( found != 1 || a == b ) {
-            ++bad;
+            ++bad_t[thread];
          } else {
-            char& mk = matched[eid[3 * t + k] - 1];   // each edge is matched by one half-edge only
-#pragma omp atomic write
-            mk = 1;
+            matched[eid[3 * t + k] - 1].store( 1, std::memory_order_relaxed );   // one half-edge per edge
          }
       }
+   }, 4096 );
+   for ( long b : bad_t ) {
+      if ( b ) {
+         return false;
+      }
    }
-   if ( bad ) {
-      return false;
-   }
-   for ( char c : matched ) {
-      if ( !c ) {
+   for ( const std::atomic<char>& c : matched ) {
+      if ( !c.load( std::memory_order_relaxed ) ) {
          return false;
       }
    }

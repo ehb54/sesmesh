@@ -18,13 +18,10 @@
 #include <utility>
 #include <vector>
 
-#ifdef _OPENMP
-#include <omp.h>
-#endif
-
 #include "clean.h"
 #include "io.h"
 #include "mesh.h"
+#include "parallel.h"
 #include "ses.h"
 
 using namespace sesmesh;
@@ -280,14 +277,10 @@ int main( int argc, char** argv ) {
    if ( base.empty() ) {
       base = name;
    }
-#ifdef _OPENMP
    if ( threads > 0 ) {
-      omp_set_num_threads( threads );
+      set_threads( threads );
    }
-   threads = omp_get_max_threads();
-#else
-   threads = 1;
-#endif
+   threads = sesmesh::threads();
 
    const double t_start = now();
    std::vector<Ball> atoms = read_xyzr( input );

@@ -1,6 +1,8 @@
 // sesmesh: the exact solvent-excluded surface function; see ses.h.
 #include "ses.h"
 
+#include "parallel.h"
+
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -79,8 +81,7 @@ SesModel::SesModel( const std::vector<Ball>& atoms, double probe ) : p_( probe )
    all.build( c, std::max( Rmax, 0.5 ) );
    const double eps = 1e-10;
    std::vector<char> inside( atoms.size(), 0 );
-#pragma omp parallel for schedule( dynamic, 64 )
-   for ( long a = 0; a < long( atoms.size() ); ++a ) {
+   parallel_for( long( atoms.size() ), [&]( long a, int ) {
       double Ra = atoms[a].r + p_;
       bool in = false;
       all.visit( c[a], 2 * Rmax, [&]( int b ) {
@@ -96,7 +97,7 @@ SesModel::SesModel( const std::vector<Ball>& atoms, double probe ) : p_( probe )
          }
       } );
       inside[a] = in;
-   }
+   }, 64 );
    std::vector<int> keep;
    for ( size_t a = 0; a < atoms.size(); ++a ) {
       if ( !inside[a] ) {
@@ -128,8 +129,7 @@ SesModel::SesModel( const std::vector<Ball>& atoms, double probe ) : p_( probe )
 
    // Neighbours: spheres that overlap.
    std::vector<std::vector<int>> nbl( s_.size() );
-#pragma omp parallel for schedule( dynamic, 64 )
-   for ( long i = 0; i < long( s_.size() ); ++i ) {
+   parallel_for( long( s_.size() ), [&]( long i, int ) {
       std::vector<int>& nb = nbl[i];
       hash_.visit( s_[i].c, 2 * rmax_, [&]( int j ) {
          if ( j != int( i ) ) {
@@ -140,7 +140,7 @@ SesModel::SesModel( const std::vector<Ball>& atoms, double probe ) : p_( probe )
          }
       } );
       std::sort( nb.begin(), nb.end() );
-   }
+   }, 64 );
    for ( size_t i = 0; i < s_.size(); ++i ) {
       s_[i].nb_begin = int( nbr_.size() );
       nbr_.insert( nbr_.end(), nbl[i].begin(), nbl[i].end() );
@@ -156,11 +156,11 @@ SesModel::SesModel( const std::vector<Ball>& atoms, double probe ) : p_( probe )
       std::vector<Vec3> tp;
    };
    std::vector<Local> loc( s_.size() );
-#pragma omp parallel
    {
-      std::vector<std::pair<double, double>> buried, merged;
-#pragma omp for schedule( dynamic, 16 )
-      for ( long i = 0; i < long( s_.size() ); ++i ) {
+      std::vector<std::vector<std::pair<double, double>>> buried_t( threads() ), merged_t( threads() );
+      parallel_for( long( s_.size() ), [&]( long i, int thread ) {
+         std::vector<std::pair<double, double>>& buried = buried_t[thread];
+         std::vector<std::pair<double, double>>& merged = merged_t[thread];
          Local& L = loc[i];
          const Sph& si = s_[i];
          for ( int nn = si.nb_begin; nn < si.nb_end; ++nn ) {
@@ -273,7 +273,7 @@ SesModel::SesModel( const std::vector<Ball>& atoms, double probe ) : p_( probe )
             }
             L.circ.push_back( C );
          }
-      }
+      }, 16 );
    }
    std::vector<char> has_exposed( s_.size(), 0 );
    for ( size_t i = 0; i < s_.size(); ++i ) {
@@ -299,12 +299,11 @@ SesModel::SesModel( const std::vector<Ball>& atoms, double probe ) : p_( probe )
    // A sphere with no exposed circle is either wholly exposed or wholly buried; one test point
    // tells which.
    const Vec3 dir = unit( Vec3( 0.26726, 0.53452, 0.80178 ) );
-#pragma omp parallel for schedule( dynamic, 64 )
-   for ( long i = 0; i < long( s_.size() ); ++i ) {
+   parallel_for( long( s_.size() ), [&]( long i, int ) {
       if ( !has_exposed[i] ) {
          s_[i].buried = !exposed_on_sphere( int( i ), s_[i].c + dir * s_[i].R );
       }
-   }
+   }, 64 );
 }
 
 int SesModel::spheres_buried() const {

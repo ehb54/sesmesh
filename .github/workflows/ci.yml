@@ -22,8 +22,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build (clang, no OpenMP)
-        run: make CXX=clang++ OPENMP=
+      - name: Build (clang)
+        run: make CXX=clang++
 
       - name: Test
-        run: make test CXX=clang++ OPENMP=
+        run: make test CXX=clang++

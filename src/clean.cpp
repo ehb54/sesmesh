@@ -1,6 +1,8 @@
 // sesmesh: mesh clean-up; see clean.h.
 #include "clean.h"
 
+#include "parallel.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -182,13 +184,12 @@ void clean_mesh( const SesModel& model, double h, const CleanOptions& opt, Mesh&
       // Edge collapses, shortest first.
       // Short edges, and the two edges at the obtuse corner of a degenerate cap (whatever their length).
       std::vector<std::pair<double, std::pair<int, int>>> edges;
-#pragma omp parallel
       {
-         std::vector<std::pair<double, std::pair<int, int>>> mine;
-#pragma omp for schedule( static ) nowait
-         for ( long t = 0; t < long( m.tri.size() ); ++t ) {
+         std::vector<std::vector<std::pair<double, std::pair<int, int>>>> mine_t( threads() );
+         parallel_for( long( m.tri.size() ), [&]( long t, int thread ) {
+            std::vector<std::pair<double, std::pair<int, int>>>& mine = mine_t[thread];
             if ( !d.talive[t] ) {
-               continue;
+               return;
             }
             int obtuse = -1;
             {
@@ -206,9 +207,10 @@ void clean_mesh( const SesModel& model, double h, const CleanOptions& opt, Mesh&
                   mine.push_back( { l, { std::min( a, b ), std::max( a, b ) } } );
                }
             }
+         }, 1024 );
+         for ( const auto& mine : mine_t ) {
+            edges.insert( edges.end(), mine.begin(), mine.end() );
          }
-#pragma omp critical
-         edges.insert( edges.end(), mine.begin(), mine.end() );
       }
       std::sort( edges.begin(), edges.end() );
       edges.erase( std::unique( edges.begin(), edges.end() ), edges.end() );
@@ -219,8 +221,7 @@ void clean_mesh( const SesModel& model, double h, const CleanOptions& opt, Mesh&
          bool ok;
       };
       std::vector<Mid> mids( edges.size() );
-#pragma omp parallel for schedule( dynamic, 256 )
-      for ( long k = 0; k < long( edges.size() ); ++k ) {
+      parallel_for( long( edges.size() ), [&]( long k, int ) {
          Mid& md = mids[k];
          md.xa = m.x[edges[k].second.first];
          md.xb = m.x[edges[k].second.second];
@@ -228,7 +229,7 @@ void clean_mesh( const SesModel& model, double h, const CleanOptions& opt, Mesh&
          md.atom = -1;
          md.feature = F_NONE;
          md.ok = project( model, dmax, md.x, md.n, md.atom, md.feature );
-      }
+      }, 256 );
       // Collapses run in parallel over spatial cells coloured like a 3-D checkerboard: within one colour
       // the cells are apart, and an edge is collapsed in its cell only if every vertex the collapse
       // reads or writes belongs to that cell.  A triangle that another thread changes has all its
@@ -427,23 +428,18 @@ void clean_mesh( const SesModel& model, double h, const CleanOptions& opt, Mesh&
                      cells.push_back( c );
                   }
                }
-#pragma omp parallel
-               {
-                  Buf B;
-                  std::vector<size_t> def;
-#pragma omp for schedule( dynamic, 1 )
-                  for ( long k = 0; k < long( cells.size() ); ++k ) {
-                     for ( size_t it : cell_items[cells[k]] ) {
-                        if ( fn( it, cells[k], B ) == 2 ) {
-                           def.push_back( it );
-                        }
+               std::vector<Buf> bufs( threads() );
+               std::vector<std::vector<size_t>> defs( threads() );
+               parallel_for( long( cells.size() ), [&]( long k, int thread ) {
+                  for ( size_t it : cell_items[cells[k]] ) {
+                     if ( fn( it, cells[k], bufs[thread] ) == 2 ) {
+                        defs[thread].push_back( it );
                      }
                   }
-#pragma omp critical
-                  {
-                     total.add( B );
-                     deferred.insert( deferred.end(), def.begin(), def.end() );
-                  }
+               } );
+               for ( size_t th = 0; th < bufs.size(); ++th ) {
+                  total.add( bufs[th] );
+                  deferred.insert( deferred.end(), defs[th].begin(), defs[th].end() );
                }
             }
             std::sort( deferred.begin(), deferred.end() );
@@ -546,10 +542,9 @@ void clean_mesh( const SesModel& model, double h, const CleanOptions& opt, Mesh&
       };
       {
          std::vector<char> poor_t( m.tri.size(), 0 );
-#pragma omp parallel for schedule( static )
-         for ( long t = 0; t < long( m.tri.size() ); ++t ) {
+         parallel_for( long( m.tri.size() ), [&]( long t, int ) {
             poor_t[t] = d.talive[t] && angle_with( int( t ), -1, Vec3() ) < target;
-         }
+         }, 1024 );
          std::vector<size_t> todo;
          for ( size_t t = 0; t < m.tri.size(); ++t ) {
             if ( poor_t[t] ) {
@@ -570,10 +565,9 @@ void clean_mesh( const SesModel& model, double h, const CleanOptions& opt, Mesh&
          std::vector<int> colour( m.x.size(), -1 );
          std::vector<std::vector<int>> classes;
          std::vector<char> used, poor_v( m.x.size(), 0 );
-#pragma omp parallel for schedule( dynamic, 1024 )
-         for ( long v = 0; v < long( m.x.size() ); ++v ) {
+         parallel_for( long( m.x.size() ), [&]( long v, int ) {
             if ( !d.valive[v] ) {
-               continue;
+               return;
             }
             d.prune( int( v ) );
             for ( int t : d.vt[v] ) {
@@ -582,7 +576,7 @@ void clean_mesh( const SesModel& model, double h, const CleanOptions& opt, Mesh&
                   break;
                }
             }
-         }
+         }, 1024 );
          for ( size_t v = 0; v < m.x.size(); ++v ) {
             if ( !poor_v[v] ) {
                continue;
@@ -604,16 +598,16 @@ void clean_mesh( const SesModel& model, double h, const CleanOptions& opt, Mesh&
             colour[v] = c;
             classes[c].push_back( int( v ) );
          }
+         std::vector<std::vector<int>> nl_t( threads() );
+         std::vector<long> moved_t( threads(), 0 );
          for ( const std::vector<int>& cls : classes ) {
-#pragma omp parallel reduction( + : moved )
             {
-               std::vector<int> nl;
-#pragma omp for schedule( dynamic, 64 )
-               for ( long i = 0; i < long( cls.size() ); ++i ) {
+               parallel_for( long( cls.size() ), [&]( long i, int thread ) {
+                  std::vector<int>& nl = nl_t[thread];
                   int v = cls[i];
                   d.neighbours( v, nl );
                   if ( nl.size() < 3 ) {
-                     continue;
+                     return;
                   }
                   Vec3 c;
                   for ( int u : nl ) {
@@ -625,7 +619,7 @@ void clean_mesh( const SesModel& model, double h, const CleanOptions& opt, Mesh&
                   Vec3 P = m.x[v] + del * 0.5, nP;
                   int at = -1, fe = F_NONE;
                   if ( !project( model, dmax, P, nP, at, fe ) || norm( P - m.x[v] ) > 0.5 * h ) {
-                     continue;
+                     return;
                   }
                   double worst_old = PI, worst_new = PI;
                   bool ok = true;
@@ -638,15 +632,18 @@ void clean_mesh( const SesModel& model, double h, const CleanOptions& opt, Mesh&
                      worst_new = std::min( worst_new, angle_with( t, v, P ) );
                   }
                   if ( !ok || !( worst_new > worst_old ) ) {
-                     continue;
+                     return;
                   }
                   m.x[v] = P;
                   m.n[v] = nP;
                   m.atom[v] = at;
                   m.feature[v] = fe;
-                  ++moved;
-               }
+                  ++moved_t[thread];
+               }, 64 );
             }
+         }
+         for ( long k : moved_t ) {
+            moved += k;
          }
       }
       info.deferred += deferred_total;
