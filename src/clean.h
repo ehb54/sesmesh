@@ -25,6 +25,7 @@ struct CleanOptions {
    double collapse = 0.3;      // collapse edges shorter than this times h
    double good_angle = 20;     // a collapse may lower the smallest angle around it if it stays above this (degrees)
    double flip_dihedral = 20;  // flip only between triangles whose normals differ by less (degrees)
+   double target_angle = 30;   // flips and smoothing work only around triangles with an angle under this (degrees)
    int smooth = 4;             // passes with tangential smoothing
    int passes = 8;
 };
@@ -32,7 +33,7 @@ struct CleanOptions {
 struct CleanInfo {
    long collapses = 0, flips = 0, smoothed = 0;
    long rejected_link = 0, rejected_shape = 0;
-   double seconds = 0;
+   double seconds = 0, seconds_collapse = 0, seconds_flip = 0, seconds_smooth = 0;
 };
 
 void clean_mesh( const SesModel& model, double h, const CleanOptions& opt, Mesh& mesh, CleanInfo& info );

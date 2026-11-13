@@ -354,6 +354,10 @@ int main( int argc, char** argv ) {
          std::printf( "clean-up: %ld edge collapses, %ld flips, %ld vertex moves; %ld collapses refused by the link "
                       "condition, %ld by the shape test (%.2f s)\n",
                       ci.collapses, ci.flips, ci.smoothed, ci.rejected_link, ci.rejected_shape, ci.seconds );
+         if ( verbose ) {
+            std::printf( "  clean-up seconds: collapses %.2f, flips %.2f, smoothing %.2f\n", ci.seconds_collapse,
+                         ci.seconds_flip, ci.seconds_smooth );
+         }
          print_check( "cleaned", h, chk, nullptr, fill, verbose );
       }
 

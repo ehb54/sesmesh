@@ -29,6 +29,18 @@ double min_angle( const Vec3& A, const Vec3& B, const Vec3& C ) {
    return std::min( a1, std::min( a2, PI - a1 - a2 ) );
 }
 
+// Largest angle of a triangle (radians); pi if degenerate.
+double max_angle( const Vec3& A, const Vec3& B, const Vec3& C ) {
+   Vec3 ab = B - A, ac = C - A, bc = C - B;
+   double cr = norm( cross( ab, ac ) );
+   if ( !( cr > 0 ) ) {
+      return PI;
+   }
+   double a1 = std::atan2( cr, dot( ab, ac ) );
+   double a2 = std::atan2( cr, -dot( ab, bc ) );
+   return std::max( a1, std::max( a2, PI - a1 - a2 ) );
+}
+
 // Moves x onto the surface: for x inside U at distance d from its nearest boundary point q,
 // x + (q - x)(d - p)/d is at distance p from q, on the surface if q stays the nearest point.
 bool project( const SesModel& model, double dmax, Vec3& x, Vec3& n, int& atom, int& feature ) {
@@ -125,6 +137,8 @@ void clean_mesh( const SesModel& model, double h, const CleanOptions& opt, Mesh&
    const double tiny = 1e-3 * h;
    const double cos_flip = std::cos( opt.flip_dihedral * PI / 180 );
    const double good = opt.good_angle * PI / 180;
+   const double target = opt.target_angle * PI / 180;
+   const double cap_angle = 150 * PI / 180;
    std::vector<int> na, nb, nc, around;
 
    // Smallest angle of triangle t with vertex `from` moved to P (from < 0: as it is).
@@ -146,7 +160,15 @@ void clean_mesh( const SesModel& model, double h, const CleanOptions& opt, Mesh&
       }
       Vec3 n0 = cross( X[1] - X[0], X[2] - X[0] ), n1 = cross( Y[1] - Y[0], Y[2] - Y[0] );
       double l0 = norm( n0 ), l1 = norm( n1 );
-      if ( !( l1 > 0 ) || dot( n1, nP ) <= 0 ) {
+      if ( !( l1 > 0 ) ) {
+         return false;
+      }
+      // A triangle that turns by less than about 25 degrees cannot fold over, whatever the surface
+      // normal at P says (at a sharp crease it can be far from both sides' triangles).
+      if ( l0 >= 1e-12 * l1 && dot( n0, n1 ) > 0.9 * l0 * l1 ) {
+         return true;
+      }
+      if ( dot( n1, nP ) <= 0 ) {
          return false;
       }
       return l0 < 1e-12 * l1 || dot( n0, n1 ) > 0.5 * l0 * l1;
@@ -155,31 +177,63 @@ void clean_mesh( const SesModel& model, double h, const CleanOptions& opt, Mesh&
    for ( int pass = 0; pass < opt.passes; ++pass ) {
       long collapsed = 0, flipped = 0;
 
+      double ts = now();
       // Edge collapses, shortest first.
+      // Short edges, and the two edges at the obtuse corner of a degenerate cap (whatever their length).
       std::vector<std::pair<double, std::pair<int, int>>> edges;
       for ( size_t t = 0; t < m.tri.size(); ++t ) {
          if ( !d.talive[t] ) {
             continue;
          }
+         int obtuse = -1;
+         {
+            const Vec3 &A = m.x[m.tri[t][0]], &B = m.x[m.tri[t][1]], &C = m.x[m.tri[t][2]];
+            if ( max_angle( A, B, C ) > cap_angle ) {
+               double la = norm( C - B ), lb = norm( A - C ), lc = norm( B - A );   // opposite each corner
+               obtuse = la >= lb && la >= lc ? 0 : ( lb >= lc ? 1 : 2 );
+            }
+         }
          for ( int k = 0; k < 3; ++k ) {
             int a = m.tri[t][k], b = m.tri[t][( k + 1 ) % 3];
-            if ( a < b ) {
-               double l = norm( m.x[a] - m.x[b] );
-               if ( l < lmax ) {
-                  edges.push_back( { l, { a, b } } );
-               }
+            double l = norm( m.x[a] - m.x[b] );
+            bool at_cap = obtuse == k || obtuse == ( k + 1 ) % 3;
+            if ( l < lmax || at_cap ) {
+               edges.push_back( { l, { std::min( a, b ), std::max( a, b ) } } );
             }
          }
       }
       std::sort( edges.begin(), edges.end() );
-      for ( const auto& e : edges ) {
+      edges.erase( std::unique( edges.begin(), edges.end() ), edges.end() );
+      // The projected midpoints, in parallel; used below while neither end has moved.
+      struct Mid {
+         Vec3 xa, xb, x, n;
+         int atom, feature;
+         bool ok;
+      };
+      std::vector<Mid> mids( edges.size() );
+#pragma omp parallel for schedule( dynamic, 256 )
+      for ( long k = 0; k < long( edges.size() ); ++k ) {
+         Mid& md = mids[k];
+         md.xa = m.x[edges[k].second.first];
+         md.xb = m.x[edges[k].second.second];
+         md.x = ( md.xa + md.xb ) * 0.5;
+         md.atom = -1;
+         md.feature = F_NONE;
+         md.ok = project( model, dmax, md.x, md.n, md.atom, md.feature );
+      }
+      for ( size_t ei = 0; ei < edges.size(); ++ei ) {
+         const auto& e = edges[ei];
          int a = e.second.first, b = e.second.second;
          if ( !d.valive[a] || !d.valive[b] ) {
             continue;
          }
          double len = norm( m.x[a] - m.x[b] );
          int t1, t2;
-         if ( len >= lmax || !d.edge_tris( a, b, t1, t2 ) ) {
+         if ( !d.edge_tris( a, b, t1, t2 ) ) {
+            continue;
+         }
+         if ( len >= lmax && max_angle( m.x[m.tri[t1][0]], m.x[m.tri[t1][1]], m.x[m.tri[t1][2]] ) <= cap_angle &&
+              max_angle( m.x[m.tri[t2][0]], m.x[m.tri[t2][1]], m.x[m.tri[t2][2]] ) <= cap_angle ) {
             continue;
          }
          int c = Dyn::third( m.tri[t1], a, b ), dd = Dyn::third( m.tri[t2], a, b );
@@ -214,8 +268,16 @@ void clean_mesh( const SesModel& model, double h, const CleanOptions& opt, Mesh&
          Cand cand[3] = { { m.x[a], m.n[a], m.atom[a], m.feature[a] }, { m.x[b], m.n[b], m.atom[b], m.feature[b] },
                           { ( m.x[a] + m.x[b] ) * 0.5, Vec3(), -1, F_NONE } };
          int ncand = 2;
-         if ( project( model, dmax, cand[2].x, cand[2].n, cand[2].atom, cand[2].feature ) &&
-              norm( cand[2].x - ( m.x[a] + m.x[b] ) * 0.5 ) < 0.25 * h ) {
+         const Mid& md = mids[ei];
+         bool ok;
+         if ( md.xa.x == m.x[a].x && md.xa.y == m.x[a].y && md.xa.z == m.x[a].z && md.xb.x == m.x[b].x &&
+              md.xb.y == m.x[b].y && md.xb.z == m.x[b].z ) {
+            cand[2] = { md.x, md.n, md.atom, md.feature };
+            ok = md.ok;
+         } else {
+            ok = project( model, dmax, cand[2].x, cand[2].n, cand[2].atom, cand[2].feature );
+         }
+         if ( ok && norm( cand[2].x - ( m.x[a] + m.x[b] ) * 0.5 ) < 0.25 * h ) {
             ncand = 3;
          }
          int best = -1;
@@ -236,7 +298,11 @@ void clean_mesh( const SesModel& model, double h, const CleanOptions& opt, Mesh&
                best = ci;
             }
          }
-         if ( best < 0 || !( best_worst > worst_old || best_worst > good || len < tiny ) ) {
+         // A collapse that removes a poor triangle may leave the worst angle around it unchanged: that
+         // worst triangle is often one the collapse does not touch.
+         const bool removes_poor = std::min( angle_with( t1, -1, Vec3() ), angle_with( t2, -1, Vec3() ) ) < target;
+         if ( best < 0 ||
+              !( best_worst > worst_old || best_worst > good || len < tiny || ( removes_poor && best_worst >= worst_old ) ) ) {
             ++info.rejected_shape;
             continue;
          }
@@ -268,9 +334,12 @@ void clean_mesh( const SesModel& model, double h, const CleanOptions& opt, Mesh&
          ++collapsed;
       }
 
-      // Edge flips where they raise the smallest angle of two nearly coplanar triangles.
+      info.seconds_collapse += now() - ts;
+      ts = now();
+      // Edge flips where they raise the smallest angle of two nearly coplanar triangles; only around
+      // triangles with an angle under the target (a flip between two good triangles gains little).
       for ( size_t t = 0; t < m.tri.size(); ++t ) {
-         if ( !d.talive[t] ) {
+         if ( !d.talive[t] || angle_with( int( t ), -1, Vec3() ) >= target ) {
             continue;
          }
          for ( int k = 0; k < 3; ++k ) {
@@ -287,17 +356,27 @@ void clean_mesh( const SesModel& model, double h, const CleanOptions& opt, Mesh&
             const Vec3 &A = m.x[a], &B = m.x[b], &C = m.x[c], &D = m.x[dd];
             Vec3 n1 = cross( B - A, C - A ), n2 = cross( A - B, D - B );
             double l1 = norm( n1 ), l2 = norm( n2 );
-            if ( !( l1 > 0 && l2 > 0 ) || dot( n1, n2 ) < cos_flip * l1 * l2 ) {
-               continue;
-            }
             double old_min = std::min( min_angle( A, B, C ), min_angle( B, A, D ) );
             double new_min = std::min( min_angle( C, A, D ), min_angle( D, B, C ) );
             if ( !( new_min > old_min + 1e-3 ) ) {
                continue;
             }
             Vec3 m1 = cross( A - C, D - C ), m2 = cross( B - D, C - D );
-            Vec3 avg = n1 / l1 + n2 / l2;
-            if ( dot( m1, avg ) <= 0 || dot( m2, avg ) <= 0 ) {
+            // Two nearly coplanar triangles; or a degenerate cap (an angle near 180 degrees, so its normal
+            // means little), where the new triangles must face the way the exact surface normals do.
+            const bool cap = max_angle( A, B, C ) > cap_angle || max_angle( B, A, D ) > cap_angle;
+            if ( l1 > 0 && l2 > 0 && dot( n1, n2 ) >= cos_flip * l1 * l2 ) {
+               Vec3 avg = n1 / l1 + n2 / l2;
+               if ( dot( m1, avg ) <= 0 || dot( m2, avg ) <= 0 ) {
+                  continue;
+               }
+            } else if ( cap ) {
+               Vec3 s1 = m.n[c] + m.n[a] + m.n[dd], s2 = m.n[dd] + m.n[b] + m.n[c];
+               double k1 = norm( m1 ) * norm( s1 ), k2 = norm( m2 ) * norm( s2 );
+               if ( !( k1 > 0 && k2 > 0 ) || dot( m1, s1 ) < 0.5 * k1 || dot( m2, s2 ) < 0.5 * k2 ) {
+                  continue;
+               }
+            } else {
                continue;
             }
             d.neighbours( a, na );
@@ -320,54 +399,99 @@ void clean_mesh( const SesModel& model, double h, const CleanOptions& opt, Mesh&
             break;   // this triangle has changed
          }
       }
+      info.seconds_flip += now() - ts;
+      ts = now();
       // Tangential smoothing: each vertex moves halfway to its neighbours' centroid in the
       // tangent plane, then back onto the surface, if that raises the smallest angle around it.
       long moved = 0;
       if ( pass < opt.smooth ) {
+         // The vertices next to a poor triangle, coloured so that no two of one colour share a
+         // triangle: the vertices of a colour then move independently, in parallel.
+         std::vector<int> colour( m.x.size(), -1 );
+         std::vector<std::vector<int>> classes;
+         std::vector<char> used;
          for ( size_t v = 0; v < m.x.size(); ++v ) {
             if ( !d.valive[v] ) {
                continue;
             }
-            d.neighbours( int( v ), na );
-            if ( na.size() < 3 ) {
-               continue;
-            }
-            Vec3 c;
-            for ( int u : na ) {
-               c += m.x[u];
-            }
-            c = c / double( na.size() );
-            Vec3 del = c - m.x[v];
-            del = del - m.n[v] * dot( del, m.n[v] );
-            Vec3 P = m.x[v] + del * 0.5, nP;
-            int at = -1, fe = F_NONE;
-            if ( !project( model, dmax, P, nP, at, fe ) || norm( P - m.x[v] ) > 0.5 * h ) {
-               continue;
-            }
-            double worst_old = PI, worst_new = PI;
-            bool ok = true;
+            d.prune( int( v ) );
+            bool poor = false;
             for ( int t : d.vt[v] ) {
-               worst_old = std::min( worst_old, angle_with( t, -1, Vec3() ) );
-               if ( !keeps_facing( t, int( v ), P, nP ) ) {
-                  ok = false;
+               if ( angle_with( t, -1, Vec3() ) < target ) {
+                  poor = true;
                   break;
                }
-               worst_new = std::min( worst_new, angle_with( t, int( v ), P ) );
             }
-            if ( !ok || !( worst_new > worst_old ) ) {
+            if ( !poor ) {
                continue;
             }
-            m.x[v] = P;
-            m.n[v] = nP;
-            m.atom[v] = at;
-            m.feature[v] = fe;
-            ++moved;
+            d.neighbours( int( v ), na );
+            used.assign( classes.size() + 1, 0 );
+            for ( int u : na ) {
+               if ( colour[u] >= 0 ) {
+                  used[colour[u]] = 1;
+               }
+            }
+            int c = 0;
+            while ( used[c] ) {
+               ++c;
+            }
+            if ( c == int( classes.size() ) ) {
+               classes.emplace_back();
+            }
+            colour[v] = c;
+            classes[c].push_back( int( v ) );
+         }
+         for ( const std::vector<int>& cls : classes ) {
+#pragma omp parallel reduction( + : moved )
+            {
+               std::vector<int> nl;
+#pragma omp for schedule( dynamic, 64 )
+               for ( long i = 0; i < long( cls.size() ); ++i ) {
+                  int v = cls[i];
+                  d.neighbours( v, nl );
+                  if ( nl.size() < 3 ) {
+                     continue;
+                  }
+                  Vec3 c;
+                  for ( int u : nl ) {
+                     c += m.x[u];
+                  }
+                  c = c / double( nl.size() );
+                  Vec3 del = c - m.x[v];
+                  del = del - m.n[v] * dot( del, m.n[v] );
+                  Vec3 P = m.x[v] + del * 0.5, nP;
+                  int at = -1, fe = F_NONE;
+                  if ( !project( model, dmax, P, nP, at, fe ) || norm( P - m.x[v] ) > 0.5 * h ) {
+                     continue;
+                  }
+                  double worst_old = PI, worst_new = PI;
+                  bool ok = true;
+                  for ( int t : d.vt[v] ) {
+                     worst_old = std::min( worst_old, angle_with( t, -1, Vec3() ) );
+                     if ( !keeps_facing( t, v, P, nP ) ) {
+                        ok = false;
+                        break;
+                     }
+                     worst_new = std::min( worst_new, angle_with( t, v, P ) );
+                  }
+                  if ( !ok || !( worst_new > worst_old ) ) {
+                     continue;
+                  }
+                  m.x[v] = P;
+                  m.n[v] = nP;
+                  m.atom[v] = at;
+                  m.feature[v] = fe;
+                  ++moved;
+               }
+            }
          }
       }
+      info.seconds_smooth += now() - ts;
       info.collapses += collapsed;
       info.flips += flipped;
       info.smoothed += moved;
-      if ( collapsed == 0 && flipped == 0 && moved == 0 ) {
+      if ( double( collapsed + flipped + moved ) < 1e-3 * double( m.x.size() ) ) {
          break;
       }
    }
