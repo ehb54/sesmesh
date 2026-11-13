@@ -9,6 +9,10 @@
 #include <stdexcept>
 #include <string>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 namespace sesmesh {
 
 namespace {
@@ -233,7 +237,58 @@ double solve_root( G&& g, double g0, double g1, long& evals ) {
    return 0.5 * ( a + b );
 }
 
+// Sorts v in parallel: sorted chunks, then rounds of pairwise merges.
+void parallel_sort( std::vector<uint64_t>& v ) {
+   int threads = 1;
+#ifdef _OPENMP
+   threads = omp_get_max_threads();
+#endif
+   const size_t n = v.size();
+   if ( threads < 2 || n < 100000 ) {
+      std::sort( v.begin(), v.end() );
+      return;
+   }
+   int chunks = 1;
+   while ( chunks < threads ) {
+      chunks *= 2;
+   }
+   std::vector<size_t> b( chunks + 1 );
+   for ( int i = 0; i <= chunks; ++i ) {
+      b[i] = n * size_t( i ) / size_t( chunks );
+   }
+#pragma omp parallel for schedule( dynamic, 1 )
+   for ( int i = 0; i < chunks; ++i ) {
+      std::sort( v.begin() + b[i], v.begin() + b[i + 1] );
+   }
+   std::vector<uint64_t> tmp( n );
+   for ( int width = 1; width < chunks; width *= 2 ) {
+#pragma omp parallel for schedule( dynamic, 1 )
+      for ( int i = 0; i < chunks; i += 2 * width ) {
+         const size_t lo = b[i], mid = b[std::min( i + width, chunks )], hi = b[std::min( i + 2 * width, chunks )];
+         std::merge( v.begin() + lo, v.begin() + mid, v.begin() + mid, v.begin() + hi, tmp.begin() + lo );
+      }
+      v.swap( tmp );
+   }
+}
+
 }  // namespace
+
+void mesh_area_volume( const Mesh& m, double& area, double& volume ) {
+   area = volume = 0;
+   if ( m.tri.empty() ) {
+      return;
+   }
+   const Vec3 o = m.x[m.tri[0][0]];
+   double a = 0, v = 0;
+#pragma omp parallel for reduction( + : a, v )
+   for ( long t = 0; t < long( m.tri.size() ); ++t ) {
+      const Vec3 &A = m.x[m.tri[t][0]], &B = m.x[m.tri[t][1]], &C = m.x[m.tri[t][2]];
+      a += 0.5 * norm( cross( B - A, C - A ) );
+      v += dot( A - o, cross( B - o, C - o ) ) / 6;
+   }
+   area = a;
+   volume = v;
+}
 
 void build_mesh( const SesModel& model, const MeshOptions& opt, Mesh& mesh, BuildInfo& info ) {
    const double h = opt.h;
@@ -698,7 +753,7 @@ MeshCheck check_mesh( const Mesh& m ) {
             e[3 * t + k] = ( lo << 33 ) | ( hi << 1 ) | ( a > b ? 1 : 0 );
          }
       }
-      std::sort( e.begin(), e.end() );
+      parallel_sort( e );
       for ( size_t i = 0; i < e.size(); ) {
          size_t j = i;
          int fwd = 0;

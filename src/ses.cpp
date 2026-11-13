@@ -78,23 +78,28 @@ SesModel::SesModel( const std::vector<Ball>& atoms, double probe ) : p_( probe )
    PointHash all;
    all.build( c, std::max( Rmax, 0.5 ) );
    const double eps = 1e-10;
-   std::vector<int> keep;
-   for ( size_t a = 0; a < atoms.size(); ++a ) {
+   std::vector<char> inside( atoms.size(), 0 );
+#pragma omp parallel for schedule( dynamic, 64 )
+   for ( long a = 0; a < long( atoms.size() ); ++a ) {
       double Ra = atoms[a].r + p_;
-      bool inside = false;
+      bool in = false;
       all.visit( c[a], 2 * Rmax, [&]( int b ) {
-         if ( inside || b == int( a ) ) {
+         if ( in || b == int( a ) ) {
             return;
          }
          double Rb = atoms[b].r + p_;
          double d = norm( c[a] - c[b] );
          if ( d + Ra < Rb - eps ) {
-            inside = true;
+            in = true;
          } else if ( std::fabs( d + Ra - Rb ) <= eps && ( Ra < Rb || ( Ra == Rb && b < int( a ) ) ) ) {
-            inside = true;
+            in = true;
          }
       } );
-      if ( !inside ) {
+      inside[a] = in;
+   }
+   std::vector<int> keep;
+   for ( size_t a = 0; a < atoms.size(); ++a ) {
+      if ( !inside[a] ) {
          keep.push_back( int( a ) );
       }
    }
@@ -122,9 +127,10 @@ SesModel::SesModel( const std::vector<Ball>& atoms, double probe ) : p_( probe )
    hash_.build( kc, std::max( rmax_, 0.5 ) );
 
    // Neighbours: spheres that overlap.
-   for ( size_t i = 0; i < s_.size(); ++i ) {
-      s_[i].nb_begin = int( nbr_.size() );
-      std::vector<int> nb;
+   std::vector<std::vector<int>> nbl( s_.size() );
+#pragma omp parallel for schedule( dynamic, 64 )
+   for ( long i = 0; i < long( s_.size() ); ++i ) {
+      std::vector<int>& nb = nbl[i];
       hash_.visit( s_[i].c, 2 * rmax_, [&]( int j ) {
          if ( j != int( i ) ) {
             double rr = s_[i].R + s_[j].R;
@@ -134,130 +140,167 @@ SesModel::SesModel( const std::vector<Ball>& atoms, double probe ) : p_( probe )
          }
       } );
       std::sort( nb.begin(), nb.end() );
-      nbr_.insert( nbr_.end(), nb.begin(), nb.end() );
+   }
+   for ( size_t i = 0; i < s_.size(); ++i ) {
+      s_[i].nb_begin = int( nbr_.size() );
+      nbr_.insert( nbr_.end(), nbl[i].begin(), nbl[i].end() );
       s_[i].nb_end = int( nbr_.size() );
    }
+   nbl.clear();
 
-   // Circles where two spheres meet, and the arcs of each that lie inside no third sphere.
-   std::vector<char> has_exposed( s_.size(), 0 );
-   std::vector<std::pair<double, double>> buried, merged;
-   for ( size_t i = 0; i < s_.size(); ++i ) {
-      s_[i].cir_begin = int( circ_.size() );
-      for ( int nn = s_[i].nb_begin; nn < s_[i].nb_end; ++nn ) {
-         int j = nbr_[nn];
-         if ( j <= int( i ) ) {
-            continue;
-         }
+   // Circles where two spheres meet, and the arcs of each that lie inside no third sphere; each
+   // sphere's circles (with the spheres after it) in parallel, then put together in order.
+   struct Local {
+      std::vector<Circle> circ;
+      std::vector<Arc> arcs;
+      std::vector<Vec3> tp;
+   };
+   std::vector<Local> loc( s_.size() );
+#pragma omp parallel
+   {
+      std::vector<std::pair<double, double>> buried, merged;
+#pragma omp for schedule( dynamic, 16 )
+      for ( long i = 0; i < long( s_.size() ); ++i ) {
+         Local& L = loc[i];
          const Sph& si = s_[i];
-         const Sph& sj = s_[j];
-         Vec3 dij = sj.c - si.c;
-         double d = norm( dij );
-         if ( d <= std::fabs( si.R - sj.R ) || d >= si.R + sj.R ) {
-            continue;
-         }
-         Circle C;
-         C.n = dij / d;
-         double a = ( d * d + si.R2 - sj.R2 ) / ( 2 * d );
-         double rho2 = si.R2 - a * a;
-         if ( rho2 <= 0 ) {
-            continue;
-         }
-         C.rho = std::sqrt( rho2 );
-         C.m = si.c + C.n * a;
-         basis( C.n, C.u, C.v );
-         C.i = int( i );
-         C.j = j;
+         for ( int nn = si.nb_begin; nn < si.nb_end; ++nn ) {
+            int j = nbr_[nn];
+            if ( j <= int( i ) ) {
+               continue;
+            }
+            const Sph& sj = s_[j];
+            Vec3 dij = sj.c - si.c;
+            double d = norm( dij );
+            if ( d <= std::fabs( si.R - sj.R ) || d >= si.R + sj.R ) {
+               continue;
+            }
+            Circle C;
+            C.n = dij / d;
+            double a = ( d * d + si.R2 - sj.R2 ) / ( 2 * d );
+            double rho2 = si.R2 - a * a;
+            if ( rho2 <= 0 ) {
+               continue;
+            }
+            C.rho = std::sqrt( rho2 );
+            C.m = si.c + C.n * a;
+            basis( C.n, C.u, C.v );
+            C.i = int( i );
+            C.j = j;
 
-         // Buried intervals of the angle th, where the circle point
-         // m + rho (cos th u + sin th v) lies inside sphere k.
-         bool all_buried = false;
-         buried.clear();
-         for ( int kk = si.nb_begin; kk < si.nb_end && !all_buried; ++kk ) {
-            int k = nbr_[kk];
-            if ( k == j ) {
-               continue;
-            }
-            Vec3 w = s_[k].c - C.m;
-            double du = dot( w, C.u ), dv = dot( w, C.v );
-            double A = std::hypot( du, dv );
-            double sv = ( rho2 + norm2( w ) - s_[k].R2 ) / ( 2 * C.rho );
-            // inside k  <=>  du cos th + dv sin th > sv
-            if ( A <= 1e-300 ) {
-               if ( sv < 0 ) {
-                  all_buried = true;
-               }
-               continue;
-            }
-            double cs = sv / A;
-            if ( cs >= 1 ) {
-               continue;
-            }
-            if ( cs <= -1 ) {
-               all_buried = true;
-               continue;
-            }
-            double half = std::acos( cs );
-            double ph = std::atan2( dv, du );
-            double lo = std::fmod( ph - half, TWO_PI );
-            if ( lo < 0 ) {
-               lo += TWO_PI;
-            }
-            double hi = lo + 2 * half;
-            if ( hi > TWO_PI ) {
-               buried.push_back( { lo, TWO_PI } );
-               buried.push_back( { 0, hi - TWO_PI } );
-            } else {
-               buried.push_back( { lo, hi } );
-            }
-         }
-         if ( all_buried ) {
-            continue;
-         }
-         C.full = buried.empty();
-         C.arc_begin = C.arc_end = int( arcs_.size() );
-         C.tp_begin = C.tp_end = int( tp_.size() );
-         if ( !C.full ) {
-            std::sort( buried.begin(), buried.end() );
-            merged.clear();
-            for ( const auto& b : buried ) {
-               if ( !merged.empty() && b.first <= merged.back().second ) {
-                  merged.back().second = std::max( merged.back().second, b.second );
-               } else {
-                  merged.push_back( b );
-               }
-            }
-            // Exposed arcs are the gaps, the last one wrapping through 0.
-            const double tiny = 1e-13;
-            for ( size_t g = 0; g < merged.size(); ++g ) {
-               double lo = merged[g].second;
-               double hi = g + 1 < merged.size() ? merged[g + 1].first : merged[0].first + TWO_PI;
-               if ( hi - lo <= tiny ) {
+            // Buried intervals of the angle th, where the circle point
+            // m + rho (cos th u + sin th v) lies inside sphere k.
+            bool all_buried = false;
+            buried.clear();
+            for ( int kk = si.nb_begin; kk < si.nb_end && !all_buried; ++kk ) {
+               int k = nbr_[kk];
+               if ( k == j ) {
                   continue;
                }
-               if ( lo >= TWO_PI ) {
-                  lo -= TWO_PI;
-                  hi -= TWO_PI;
+               Vec3 w = s_[k].c - C.m;
+               double rk = s_[k].R + C.rho;
+               if ( norm2( w ) >= rk * rk ) {
+                  continue;   // sphere k cannot reach the circle
                }
-               arcs_.push_back( { lo, hi } );
-               tp_.push_back( C.m + ( C.u * std::cos( lo ) + C.v * std::sin( lo ) ) * C.rho );
-               tp_.push_back( C.m + ( C.u * std::cos( hi ) + C.v * std::sin( hi ) ) * C.rho );
+               double du = dot( w, C.u ), dv = dot( w, C.v );
+               double A = std::hypot( du, dv );
+               double sv = ( rho2 + norm2( w ) - s_[k].R2 ) / ( 2 * C.rho );
+               // inside k  <=>  du cos th + dv sin th > sv
+               if ( A <= 1e-300 ) {
+                  if ( sv < 0 ) {
+                     all_buried = true;
+                  }
+                  continue;
+               }
+               double cs = sv / A;
+               if ( cs >= 1 ) {
+                  continue;
+               }
+               if ( cs <= -1 ) {
+                  all_buried = true;
+                  continue;
+               }
+               double half = std::acos( cs );
+               double ph = std::atan2( dv, du );
+               double lo = std::fmod( ph - half, TWO_PI );
+               if ( lo < 0 ) {
+                  lo += TWO_PI;
+               }
+               double hi = lo + 2 * half;
+               if ( hi > TWO_PI ) {
+                  buried.push_back( { lo, TWO_PI } );
+                  buried.push_back( { 0, hi - TWO_PI } );
+               } else {
+                  buried.push_back( { lo, hi } );
+               }
             }
-            C.arc_end = int( arcs_.size() );
-            C.tp_end = int( tp_.size() );
-            if ( C.arc_end == C.arc_begin ) {
+            if ( all_buried ) {
                continue;
             }
+            C.full = buried.empty();
+            C.arc_begin = C.arc_end = int( L.arcs.size() );
+            C.tp_begin = C.tp_end = int( L.tp.size() );
+            if ( !C.full ) {
+               std::sort( buried.begin(), buried.end() );
+               merged.clear();
+               for ( const auto& b : buried ) {
+                  if ( !merged.empty() && b.first <= merged.back().second ) {
+                     merged.back().second = std::max( merged.back().second, b.second );
+                  } else {
+                     merged.push_back( b );
+                  }
+               }
+               // Exposed arcs are the gaps, the last one wrapping through 0.
+               const double tiny = 1e-13;
+               for ( size_t g = 0; g < merged.size(); ++g ) {
+                  double lo = merged[g].second;
+                  double hi = g + 1 < merged.size() ? merged[g + 1].first : merged[0].first + TWO_PI;
+                  if ( hi - lo <= tiny ) {
+                     continue;
+                  }
+                  if ( lo >= TWO_PI ) {
+                     lo -= TWO_PI;
+                     hi -= TWO_PI;
+                  }
+                  L.arcs.push_back( { lo, hi } );
+                  L.tp.push_back( C.m + ( C.u * std::cos( lo ) + C.v * std::sin( lo ) ) * C.rho );
+                  L.tp.push_back( C.m + ( C.u * std::cos( hi ) + C.v * std::sin( hi ) ) * C.rho );
+               }
+               C.arc_end = int( L.arcs.size() );
+               C.tp_end = int( L.tp.size() );
+               if ( C.arc_end == C.arc_begin ) {
+                  continue;
+               }
+            }
+            L.circ.push_back( C );
          }
-         has_exposed[i] = has_exposed[j] = 1;
+      }
+   }
+   std::vector<char> has_exposed( s_.size(), 0 );
+   for ( size_t i = 0; i < s_.size(); ++i ) {
+      Local& L = loc[i];
+      s_[i].cir_begin = int( circ_.size() );
+      const int a0 = int( arcs_.size() ), t0 = int( tp_.size() );
+      for ( Circle C : L.circ ) {
+         C.arc_begin += a0;
+         C.arc_end += a0;
+         C.tp_begin += t0;
+         C.tp_end += t0;
+         has_exposed[C.i] = has_exposed[C.j] = 1;
          circ_.push_back( C );
       }
+      arcs_.insert( arcs_.end(), L.arcs.begin(), L.arcs.end() );
+      tp_.insert( tp_.end(), L.tp.begin(), L.tp.end() );
       s_[i].cir_end = int( circ_.size() );
+      std::vector<Circle>().swap( L.circ );
+      std::vector<Arc>().swap( L.arcs );
+      std::vector<Vec3>().swap( L.tp );
    }
 
    // A sphere with no exposed circle is either wholly exposed or wholly buried; one test point
    // tells which.
    const Vec3 dir = unit( Vec3( 0.26726, 0.53452, 0.80178 ) );
-   for ( size_t i = 0; i < s_.size(); ++i ) {
+#pragma omp parallel for schedule( dynamic, 64 )
+   for ( long i = 0; i < long( s_.size() ); ++i ) {
       if ( !has_exposed[i] ) {
          s_[i].buried = !exposed_on_sphere( int( i ), s_[i].c + dir * s_[i].R );
       }

@@ -5,6 +5,7 @@
 // See README.md at the top of the repository.
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -59,6 +60,10 @@ const char* USAGE =
    "\n"
    "base.c3v and the first line of base.best get the extrapolated area and volume when -x\n"
    "is given (from the meshes before clean-up), else the written mesh's own.\n";
+
+double now() {
+   return std::chrono::duration<double>( std::chrono::steady_clock::now().time_since_epoch() ).count();
+}
 
 [[noreturn]] void fail( const std::string& msg ) {
    std::fprintf( stderr, "sesmesh: %s\n", msg.c_str() );
@@ -284,9 +289,11 @@ int main( int argc, char** argv ) {
    threads = 1;
 #endif
 
+   const double t_start = now();
    std::vector<Ball> atoms = read_xyzr( input );
    try {
       SesModel model( atoms, probe );
+      const double t_model = now();
       std::printf( "sesmesh: %s, %d spheres (%d inside others, %d buried), probe %.3f A; %d exposed circles, "
                    "%d exposed arcs; %d threads\n",
                    input.c_str(), model.atoms(), model.atoms() - model.spheres_kept(), model.spheres_buried(), probe,
@@ -333,8 +340,15 @@ int main( int argc, char** argv ) {
          Mesh m;
          BuildInfo bi;
          build( hx, m, bi );
-         MeshCheck c = check_mesh( m );
-         print_check( "raw", hx, c, &bi, fill, verbose );
+         MeshCheck c;
+         if ( verbose ) {
+            c = check_mesh( m );
+            print_check( "raw", hx, c, &bi, fill, verbose );
+         } else {
+            mesh_area_volume( m, c.area, c.volume );
+            std::printf( "raw h %.4f: %ld triangles; area %.4f, volume %.4f\n", hx, long( m.tri.size() ), c.area,
+                         c.volume );
+         }
          h2.push_back( hx * hx );
          areas.push_back( c.area );
          vols.push_back( c.volume );
@@ -342,21 +356,36 @@ int main( int argc, char** argv ) {
       Mesh mesh;
       BuildInfo info;
       build( h, mesh, info );
-      MeshCheck chk = check_mesh( mesh );
-      print_check( "raw", h, chk, &info, fill, verbose );
+      // The raw mesh is checked in full when it is the one written, or with -v; else only its area and
+      // volume are needed (for -x).
+      double tc = now();
+      MeshCheck chk;
+      if ( !clean || verbose ) {
+         chk = check_mesh( mesh );
+         print_check( "raw", h, chk, &info, fill, verbose );
+      } else {
+         mesh_area_volume( mesh, chk.area, chk.volume );
+         std::printf( "raw h %.4f: grid %dx%dx%d, %ld band bricks; %ld vertices, %ld triangles; area %.4f, volume %.4f\n",
+                      h, info.nodes_per_axis[0], info.nodes_per_axis[1], info.nodes_per_axis[2], info.band_bricks,
+                      long( mesh.x.size() ), long( mesh.tri.size() ), chk.area, chk.volume );
+      }
+      double t_check = now() - tc;
       h2.push_back( h * h );
       areas.push_back( chk.area );
       vols.push_back( chk.volume );
       if ( clean ) {
          CleanInfo ci;
          clean_mesh( model, h, copt, mesh, ci );
+         tc = now();
          chk = check_mesh( mesh );
+         t_check += now() - tc;
          std::printf( "clean-up: %ld edge collapses, %ld flips, %ld vertex moves; %ld collapses refused by the link "
                       "condition, %ld by the shape test (%.2f s)\n",
                       ci.collapses, ci.flips, ci.smoothed, ci.rejected_link, ci.rejected_shape, ci.seconds );
          if ( verbose ) {
-            std::printf( "  clean-up seconds: collapses %.2f, flips %.2f, smoothing %.2f\n", ci.seconds_collapse,
-                         ci.seconds_flip, ci.seconds_smooth );
+            std::printf( "  clean-up seconds: collapses %.2f, flips %.2f, smoothing %.2f; %d passes; %ld collapse or flip "
+                         "tries left to the serial pass\n",
+                         ci.seconds_collapse, ci.seconds_flip, ci.seconds_smooth, ci.passes, ci.deferred );
          }
          print_check( "cleaned", h, chk, nullptr, fill, verbose );
       }
@@ -387,6 +416,7 @@ int main( int argc, char** argv ) {
          std::printf( "extrapolated to h = 0 (a + b h^2, %zu spacings): area %.4f (b %.4f), volume %.4f (b %.4f)\n",
                       h2.size(), area, ba, volume, bv );
       }
+      const double t_write0 = now();
       if ( want_msms ) {
          write_msms( base, name, mesh, model.atoms(), probe, h );
          std::printf( "wrote %s.vert, %s.face\n", base.c_str(), base.c_str() );
@@ -402,6 +432,10 @@ int main( int argc, char** argv ) {
       if ( want_bod ) {
          write_bod( base, mesh, mass, temp, visc );
          std::printf( "wrote %s.bod\n", base.c_str() );
+      }
+      if ( verbose ) {
+         std::printf( "seconds: reading and setup %.2f, mesh checks %.2f, writing %.2f, total %.2f\n", t_model - t_start,
+                      t_check, now() - t_write0, now() - t_start );
       }
       if ( !chk.closed_manifold() ) {
          return 2;

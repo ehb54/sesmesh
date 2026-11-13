@@ -33,6 +33,8 @@ struct CleanOptions {
 struct CleanInfo {
    long collapses = 0, flips = 0, smoothed = 0;
    long rejected_link = 0, rejected_shape = 0;
+   long deferred = 0;
+   int passes = 0;   // collapses left to the serial pass: their neighbourhood crosses a cell border
    double seconds = 0, seconds_collapse = 0, seconds_flip = 0, seconds_smooth = 0;
 };
 
