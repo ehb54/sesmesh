@@ -10,8 +10,8 @@ CXXFLAGS = -O2 -std=c++17 -Wall -Wextra
 OPENMP   = -fopenmp
 OMPFLAGS = $(if $(OPENMP),$(OPENMP),-Wno-unknown-pragmas)
 
-SRC = src/ses.cpp src/mesh.cpp
-HDR = src/vec3.h src/ses.h src/mesh.h
+SRC = src/ses.cpp src/mesh.cpp src/clean.cpp src/io.cpp
+HDR = src/vec3.h src/ses.h src/mesh.h src/clean.h src/io.h
 
 all: bin/sesmesh
 

@@ -21,6 +21,8 @@
 #include <omp.h>
 #endif
 
+#include "clean.h"
+#include "io.h"
 #include "mesh.h"
 #include "ses.h"
 
@@ -36,17 +38,27 @@ const char* USAGE =
    "\n"
    "  -p probe     probe radius in A (default 1.5)\n"
    "  -g h         grid spacing in A (default 0.2); vertices lie on the exact surface\n"
+   "  -n N         choose the grid spacing for a mesh of about N triangles (instead of -g)\n"
    "  -x h2,h3,..  also mesh at these spacings, report area and volume for each, and\n"
    "               extrapolate both to h = 0 by a least-squares fit a + b h^2\n"
+   "  -r           raw marching-tetrahedra mesh: skip the clean-up of slender triangles\n"
+   "  -c frac      clean-up: collapse edges shorter than frac times h (default 0.3)\n"
    "  -o base      output base name (default: the input's name without .xyzr)\n"
-   "  -f list      output formats, a comma list of msms (base.vert, base.face) and\n"
-   "               c3p (base.c3p, base.c3v as msroll writes them, for rcoal), or none\n"
-   "               (default msms,c3p)\n"
+   "  -f list      output formats, a comma list of:\n"
+   "                 msms  base.vert, base.face\n"
+   "                 c3p   base.c3p, base.c3v as msroll writes them, for rcoal\n"
+   "                 best  base.best, BEST's triangle format\n"
+   "                 bod   base.bod, ZENO's format\n"
+   "               or none (default msms,c3p)\n"
+   "  -M mass      mass in Da for base.bod (no MASS line without it)\n"
+   "  -T temp      temperature in C for base.bod (default 20)\n"
+   "  -V visc      solvent viscosity in cP for base.bod (default 1.002)\n"
    "  -k           keep internal cavities (default: fill them, keeping the outer surface)\n"
    "  -t n         threads (default: all)\n"
    "  -v           report the time each stage takes\n"
    "\n"
-   "base.c3v gets the extrapolated area and volume when -x is given, else the mesh's own.\n";
+   "base.c3v and the first line of base.best get the extrapolated area and volume when -x\n"
+   "is given (from the meshes before clean-up), else the written mesh's own.\n";
 
 [[noreturn]] void fail( const std::string& msg ) {
    std::fprintf( stderr, "sesmesh: %s\n", msg.c_str() );
@@ -115,105 +127,38 @@ std::vector<Ball> read_xyzr( const std::string& path ) {
    return atoms;
 }
 
-// MSMS face types: 1 contact, 2 reentrant, 3 toroidal.
-int msms_type( int feature ) { return feature == F_SPHERE ? 1 : ( feature == F_TRIPLE ? 2 : 3 ); }
-
-FILE* open_out( const std::string& path ) {
-   FILE* f = std::fopen( path.c_str(), "w" );
-   if ( !f ) {
-      fail( "cannot write " + path );
+void print_check( const char* label, double h, const MeshCheck& c, const BuildInfo* info, bool fill, bool verbose ) {
+   std::printf( "%s h %.4f: ", label, h );
+   if ( info ) {
+      std::printf( "grid %dx%dx%d, %ld band bricks; ", info->nodes_per_axis[0], info->nodes_per_axis[1],
+                   info->nodes_per_axis[2], info->band_bricks );
    }
-   return f;
-}
-
-void close_out( FILE* f, const std::string& path ) {
-   if ( std::ferror( f ) || std::fclose( f ) != 0 ) {
-      fail( "error writing " + path );
+   std::printf( "%ld vertices, %ld triangles, %zu component%s, %s, Euler %ld; area %.4f, volume %.4f; smallest "
+                "angle %.2f deg, %ld (%.2f%%) under 10 deg, %ld (%.2f%%) under 20 deg\n",
+                c.vertices, c.triangles, c.components.size(), c.components.size() == 1 ? "" : "s",
+                c.closed_manifold() ? "closed manifold" : "NOT a closed manifold", c.euler, c.area, c.volume,
+                c.min_angle, std::lround( c.below_10 * c.triangles ), 100 * c.below_10,
+                std::lround( c.below_20 * c.triangles ), 100 * c.below_20 );
+   if ( !c.closed_manifold() || c.degenerate ) {
+      std::printf( "  open edges %ld, non-manifold edges %ld, misoriented edges %ld, non-manifold vertices %ld, "
+                   "zero-area triangles %ld\n",
+                   c.open_edges, c.nonmanifold_edges, c.misoriented_edges, c.nonmanifold_vertices, c.degenerate );
    }
-}
-
-void write_msms( const std::string& base, const std::string& name, const Mesh& m, int natoms, double probe, double h ) {
-   std::string pv = base + ".vert", pf = base + ".face";
-   FILE* f = open_out( pv );
-   std::fprintf( f, "# MSMS solvent excluded surface vertices for %s (sesmesh)\n", name.c_str() );
-   std::fprintf( f, "#vertex #sphere density probe_r\n" );
-   std::fprintf( f, "%7ld %7d %6.2f %5.2f\n", long( m.x.size() ), natoms, 1 / ( h * h ), probe );
-   for ( size_t v = 0; v < m.x.size(); ++v ) {
-      std::fprintf( f, "%14.8f %14.8f %14.8f %10.6f %10.6f %10.6f %7d %7d %2d\n", m.x[v].x, m.x[v].y, m.x[v].z,
-                    m.n[v].x, m.n[v].y, m.n[v].z, 0, m.atom[v] + 1, msms_type( m.feature[v] ) );
-   }
-   close_out( f, pv );
-   f = open_out( pf );
-   std::fprintf( f, "# MSMS solvent excluded surface faces for %s (sesmesh)\n", name.c_str() );
-   std::fprintf( f, "#faces  #sphere density probe_r\n" );
-   std::fprintf( f, "%7ld %7d %6.2f %5.2f\n", long( m.tri.size() ), natoms, 1 / ( h * h ), probe );
-   for ( const auto& t : m.tri ) {
-      std::fprintf( f, "%7d %7d %7d %2d %6d\n", t[0] + 1, t[1] + 1, t[2] + 1, msms_type( m.feature[t[0]] ), 0 );
-   }
-   close_out( f, pf );
-}
-
-// msroll's .c3p (vertices with normals, edges, triangles with their edges) and .c3v (areas and
-// volume; rcoal reads the area and volume of component 1 from its line 13).
-void write_c3p( const std::string& base, const std::string& name, const Mesh& m, int natoms, double probe,
-                double area, double volume ) {
-   const long nt = long( m.tri.size() );
-   std::vector<std::pair<uint64_t, long>> key( 3 * nt );
-   for ( long t = 0; t < nt; ++t ) {
-      for ( int k = 0; k < 3; ++k ) {
-         uint64_t a = uint64_t( m.tri[t][k] ), b = uint64_t( m.tri[t][( k + 1 ) % 3] );
-         key[3 * t + k] = { ( std::min( a, b ) << 32 ) | std::max( a, b ), 3 * t + k };
+   if ( c.components.size() > 1 ) {
+      for ( size_t k = 0; k < c.components.size() && k < 8; ++k ) {
+         std::printf( "  component %zu: %ld triangles, area %.4f, volume %.4f\n", k + 1, c.components[k].triangles,
+                      c.components[k].area, c.components[k].volume );
       }
    }
-   std::sort( key.begin(), key.end() );
-   std::vector<long> eid( 3 * nt );
-   std::vector<uint64_t> edges;
-   for ( size_t i = 0; i < key.size(); ++i ) {
-      if ( i == 0 || key[i].first != key[i - 1].first ) {
-         edges.push_back( key[i].first );
-      }
-      eid[key[i].second] = long( edges.size() );
+   if ( info && info->cavity_nodes ) {
+      std::printf( "  %ld grid nodes in internal cavities %s\n", info->cavity_nodes, fill ? "filled" : "kept" );
    }
-
-   std::string pc = base + ".c3p", pv = base + ".c3v";
-   FILE* f = open_out( pc );
-   std::fprintf( f, "%ld %ld %ld\n", long( m.x.size() ), long( edges.size() ), nt );
-   for ( size_t v = 0; v < m.x.size(); ++v ) {
-      std::fprintf( f, "%15.8f %15.8f %15.8f %9.6f %9.6f %9.6f   0.000000   0.000000   0.000000   1 %6d %2d\n",
-                    m.x[v].x, m.x[v].y, m.x[v].z, m.n[v].x, m.n[v].y, m.n[v].z, m.atom[v] + 1,
-                    msms_type( m.feature[v] ) );
+   if ( info && verbose ) {
+      std::printf( "  %ld node and %ld root evaluations; seconds: bricks %.2f, nodes %.2f, fill %.2f, vertices %.2f, "
+                   "triangles %.2f\n",
+                   info->node_evals, info->root_evals, info->seconds_classify, info->seconds_nodes, info->seconds_fill,
+                   info->seconds_vertices, info->seconds_triangles );
    }
-   for ( uint64_t e : edges ) {
-      std::fprintf( f, "%7ld %7ld   1     0   0\n", long( e >> 32 ) + 1, long( e & 0xffffffffu ) + 1 );
-   }
-   for ( long t = 0; t < nt; ++t ) {
-      std::fprintf( f, "%8ld %8ld %8ld %7d %7d %7d   1     1   0\n", eid[3 * t], eid[3 * t + 1], eid[3 * t + 2],
-                    m.tri[t][0] + 1, m.tri[t][1] + 1, m.tri[t][2] + 1 );
-   }
-   close_out( f, pc );
-
-   Vec3 c;
-   for ( const Vec3& x : m.x ) {
-      c += x;
-   }
-   if ( !m.x.empty() ) {
-      c = c / double( m.x.size() );
-   }
-   f = open_out( pv );
-   std::fprintf( f, "molecule name           = %s\n", name.c_str() );
-   std::fprintf( f, "number of atoms         = %10d\n", natoms );
-   std::fprintf( f, "probe radius            = %14.3f\n", probe );
-   std::fprintf( f, "contact area            = %14.3f\n", 0.0 );
-   std::fprintf( f, "reentrant area          = %14.3f\n", 0.0 );
-   std::fprintf( f, "molecular area          = %14.3f\n", area );
-   std::fprintf( f, "accessible area         = %14.3f\n", 0.0 );
-   std::fprintf( f, "solvent-excluded volume = %14.3f\n", volume );
-   std::fprintf( f, "\n" );
-   std::fprintf( f, "component           center              volume    molecular  accessible\n" );
-   std::fprintf( f, " number      x        y        z                    area       area\n" );
-   std::fprintf( f, "\n" );
-   std::fprintf( f, "    1  %10.3f %8.3f %8.3f %11.3f %11.3f %11.3f\n", c.x, c.y, c.z, volume, area, 0.0 );
-   close_out( f, pv );
 }
 
 // Least-squares fit y = a + b x; returns a (and b).
@@ -234,10 +179,12 @@ double fit_line( const std::vector<double>& x, const std::vector<double>& y, dou
 }  // namespace
 
 int main( int argc, char** argv ) {
-   double probe = 1.5, h = 0.2;
+   double probe = 1.5, h = 0.2, mass = 0, temp = 20, visc = 1.002, collapse = -1;
+   long target = 0;
    std::vector<double> extra;
    std::string input, base;
-   bool want_msms = true, want_c3p = true, fill = true, verbose = false;
+   bool want_msms = true, want_c3p = true, want_best = false, want_bod = false;
+   bool fill = true, clean = true, verbose = false, h_given = false;
    int threads = 0;
 
    for ( int a = 1; a < argc; ++a ) {
@@ -255,23 +202,43 @@ int main( int argc, char** argv ) {
          probe = to_double( value(), "probe radius" );
       } else if ( o == "-g" ) {
          h = to_double( value(), "grid spacing" );
+         h_given = true;
+      } else if ( o == "-n" ) {
+         target = long( to_double( value(), "triangle count" ) );
+         if ( target < 100 ) {
+            fail( "the target triangle count must be at least 100" );
+         }
       } else if ( o == "-x" ) {
          for ( const std::string& s : split( value(), ',' ) ) {
             extra.push_back( to_double( s, "grid spacing" ) );
          }
+      } else if ( o == "-r" ) {
+         clean = false;
+      } else if ( o == "-c" ) {
+         collapse = to_double( value(), "collapse length" );
       } else if ( o == "-o" ) {
          base = value();
       } else if ( o == "-f" ) {
-         want_msms = want_c3p = false;
+         want_msms = want_c3p = want_best = want_bod = false;
          for ( const std::string& s : split( value(), ',' ) ) {
             if ( s == "msms" ) {
                want_msms = true;
             } else if ( s == "c3p" ) {
                want_c3p = true;
+            } else if ( s == "best" ) {
+               want_best = true;
+            } else if ( s == "bod" ) {
+               want_bod = true;
             } else if ( s != "none" ) {
                fail( "unknown format " + s );
             }
          }
+      } else if ( o == "-M" ) {
+         mass = to_double( value(), "mass" );
+      } else if ( o == "-T" ) {
+         temp = to_double( value(), "temperature" );
+      } else if ( o == "-V" ) {
+         visc = to_double( value(), "viscosity" );
       } else if ( o == "-k" ) {
          fill = false;
       } else if ( o == "-t" ) {
@@ -324,58 +291,97 @@ int main( int argc, char** argv ) {
                    "%d exposed arcs; %d threads\n",
                    input.c_str(), model.atoms(), model.atoms() - model.spheres_kept(), model.spheres_buried(), probe,
                    model.circles_exposed(), model.arcs_exposed(), threads );
+      CleanOptions copt;
+      if ( collapse >= 0 ) {
+         copt.collapse = collapse;
+      }
+      auto build = [&]( double hh, Mesh& m, BuildInfo& info ) {
+         MeshOptions o;
+         o.h = hh;
+         o.fill_cavities = fill;
+         build_mesh( model, o, m, info );
+      };
 
-      std::vector<double> hs( extra );
-      hs.push_back( h );   // the mesh written out is the last one
-      std::vector<double> h2, areas, vols;
-      Mesh mesh;
-      MeshCheck chk;
-      for ( size_t k = 0; k < hs.size(); ++k ) {
-         MeshOptions opt;
-         opt.h = hs[k];
-         opt.fill_cavities = fill;
-         BuildInfo info;
-         build_mesh( model, opt, mesh, info );
-         chk = check_mesh( mesh );
-         std::printf( "h %.4f: grid %dx%dx%d, %ld band bricks; %ld vertices, %ld triangles, %zu component%s, %s, "
-                      "Euler %ld; area %.4f, volume %.4f; smallest angle %.2f deg, %.1f%% under 10 deg\n",
-                      hs[k], info.nodes_per_axis[0], info.nodes_per_axis[1], info.nodes_per_axis[2], info.band_bricks,
-                      chk.vertices, chk.triangles, chk.components.size(), chk.components.size() == 1 ? "" : "s",
-                      chk.closed_manifold() ? "closed manifold" : "NOT a closed manifold", chk.euler, chk.area,
-                      chk.volume, chk.min_angle, 100 * chk.below_10 );
-         if ( !chk.closed_manifold() || chk.degenerate ) {
-            std::printf( "  open edges %ld, non-manifold edges %ld, misoriented edges %ld, non-manifold vertices %ld, "
-                         "zero-area triangles %ld\n",
-                         chk.open_edges, chk.nonmanifold_edges, chk.misoriented_edges, chk.nonmanifold_vertices,
-                         chk.degenerate );
-         }
-         if ( chk.components.size() > 1 ) {
-            for ( size_t c = 0; c < chk.components.size() && c < 8; ++c ) {
-               std::printf( "  component %zu: %ld triangles, area %.4f, volume %.4f\n", c + 1,
-                            chk.components[c].triangles, chk.components[c].area, chk.components[c].volume );
+      // The spacing for a target triangle count: the count goes as 1/h^2.
+      if ( target > 0 ) {
+         double hh = h_given ? h : 1.0, best_h = hh;
+         long best_diff = -1;
+         for ( int it = 0; it < 8; ++it ) {
+            Mesh m;
+            BuildInfo bi;
+            build( hh, m, bi );
+            if ( clean ) {
+               CleanInfo ci;
+               clean_mesh( model, hh, copt, m, ci );
             }
+            long nt = long( m.tri.size() ), diff = std::labs( nt - target );
+            std::printf( "target %ld triangles: h %.4f gives %ld\n", target, hh, nt );
+            if ( best_diff < 0 || diff < best_diff ) {
+               best_diff = diff;
+               best_h = hh;
+            }
+            if ( diff <= 0.02 * target || nt == 0 ) {
+               break;
+            }
+            hh *= std::sqrt( double( nt ) / double( target ) );
          }
-         if ( info.cavity_nodes ) {
-            std::printf( "  %ld grid nodes in internal cavities %s\n", info.cavity_nodes, fill ? "filled" : "kept" );
+         h = best_h;
+      }
+
+      std::vector<double> h2, areas, vols;
+      for ( double hx : extra ) {
+         Mesh m;
+         BuildInfo bi;
+         build( hx, m, bi );
+         MeshCheck c = check_mesh( m );
+         print_check( "raw", hx, c, &bi, fill, verbose );
+         h2.push_back( hx * hx );
+         areas.push_back( c.area );
+         vols.push_back( c.volume );
+      }
+      Mesh mesh;
+      BuildInfo info;
+      build( h, mesh, info );
+      MeshCheck chk = check_mesh( mesh );
+      print_check( "raw", h, chk, &info, fill, verbose );
+      h2.push_back( h * h );
+      areas.push_back( chk.area );
+      vols.push_back( chk.volume );
+      if ( clean ) {
+         CleanInfo ci;
+         clean_mesh( model, h, copt, mesh, ci );
+         chk = check_mesh( mesh );
+         std::printf( "clean-up: %ld edge collapses, %ld flips, %ld vertex moves; %ld collapses refused by the link "
+                      "condition, %ld by the shape test (%.2f s)\n",
+                      ci.collapses, ci.flips, ci.smoothed, ci.rejected_link, ci.rejected_shape, ci.seconds );
+         print_check( "cleaned", h, chk, nullptr, fill, verbose );
+      }
+
+      // A coarse grid can miss a narrow channel or pinch a thin neck: compare the topology with a
+      // finer grid's when the spacing was chosen for a triangle count.
+      if ( target > 0 && h > 0.5 ) {
+         double href = std::min( 0.5, h / 2 );
+         Mesh m;
+         BuildInfo bi;
+         build( href, m, bi );
+         MeshCheck c = check_mesh( m );
+         if ( c.euler != chk.euler || c.components.size() != chk.components.size() ) {
+            std::printf( "WARNING: at h %.4f the surface has %zu component(s) and Euler characteristic %ld, but at h "
+                         "%.4f %zu and %ld: the coarse grid changes the topology; consider a larger -n\n",
+                         h, chk.components.size(), chk.euler, href, c.components.size(), c.euler );
+         } else {
+            std::printf( "topology checked at h %.4f: the same (%zu component(s), Euler %ld)\n", href,
+                         c.components.size(), c.euler );
          }
-         if ( verbose ) {
-            std::printf( "  %ld node and %ld root evaluations; seconds: bricks %.2f, nodes %.2f, fill %.2f, "
-                         "vertices %.2f, triangles %.2f\n",
-                         info.node_evals, info.root_evals, info.seconds_classify, info.seconds_nodes, info.seconds_fill,
-                         info.seconds_vertices, info.seconds_triangles );
-         }
-         h2.push_back( hs[k] * hs[k] );
-         areas.push_back( chk.area );
-         vols.push_back( chk.volume );
       }
 
       double area = chk.area, volume = chk.volume;
-      if ( hs.size() > 1 ) {
+      if ( h2.size() > 1 ) {
          double ba, bv;
          area = fit_line( h2, areas, ba );
          volume = fit_line( h2, vols, bv );
          std::printf( "extrapolated to h = 0 (a + b h^2, %zu spacings): area %.4f (b %.4f), volume %.4f (b %.4f)\n",
-                      hs.size(), area, ba, volume, bv );
+                      h2.size(), area, ba, volume, bv );
       }
       if ( want_msms ) {
          write_msms( base, name, mesh, model.atoms(), probe, h );
@@ -384,6 +390,14 @@ int main( int argc, char** argv ) {
       if ( want_c3p ) {
          write_c3p( base, name, mesh, model.atoms(), probe, area, volume );
          std::printf( "wrote %s.c3p, %s.c3v\n", base.c_str(), base.c_str() );
+      }
+      if ( want_best ) {
+         write_best( base, mesh, area, volume );
+         std::printf( "wrote %s.best\n", base.c_str() );
+      }
+      if ( want_bod ) {
+         write_bod( base, mesh, mass, temp, visc );
+         std::printf( "wrote %s.bod\n", base.c_str() );
       }
       if ( !chk.closed_manifold() ) {
          return 2;

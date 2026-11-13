@@ -7,13 +7,21 @@
 //    pieces at a cusp.
 // 3. A shell of spheres around a cavity: filled, and kept with -k.
 // 4. A random cluster: the mesh must be a closed manifold.
+// 5. The clean-up keeps every mesh a closed manifold of the same topology, hardly changes its
+//    area and volume, and removes slender triangles.
+// 6. The writers: what they write reads back.
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <fstream>
 #include <random>
+#include <sstream>
 #include <string>
 #include <vector>
 
+#include "clean.h"
+#include "io.h"
 #include "mesh.h"
 #include "ses.h"
 
@@ -141,6 +149,31 @@ struct Fit {
    double area, volume;
 };
 
+// Cleans a copy of mesh and checks it against the raw mesh's check c.
+void check_clean( const std::string& name, const SesModel& model, double h, const Mesh& mesh, const MeshCheck& c,
+                  double ref_area, double ref_volume ) {
+   Mesh m = mesh;
+   CleanInfo ci;
+   clean_mesh( model, h, CleanOptions(), m, ci );
+   MeshCheck k = check_mesh( m );
+   std::printf( "    cleaned: %ld triangles (%ld collapses, %ld flips, %ld moves), smallest angle %.1f deg (raw %.2f), "
+                "%.2f%% under 20 deg (raw %.1f%%), area %+.2e, volume %+.2e\n",
+                k.triangles, ci.collapses, ci.flips, ci.smoothed, k.min_angle, c.min_angle, 100 * k.below_20,
+                100 * c.below_20, k.area / ref_area - 1, k.volume / ref_volume - 1 );
+   CHECK( k.closed_manifold(), "%s h %g: cleaned mesh not a closed manifold", name.c_str(), h );
+   CHECK( k.euler == c.euler && k.components.size() == c.components.size(),
+          "%s h %g: clean-up changed the topology (Euler %ld -> %ld)", name.c_str(), h, c.euler, k.euler );
+   CHECK( k.degenerate == 0, "%s h %g: cleaned mesh has %ld zero-area triangles", name.c_str(), h, k.degenerate );
+   // No further from the reference than the raw mesh (for the clusters the raw mesh is the reference).
+   CHECK( std::fabs( k.area - ref_area ) <= std::fabs( c.area - ref_area ) + 5e-4 * ref_area,
+          "%s h %g: clean-up moved the area by %.2e", name.c_str(), h, k.area / c.area - 1 );
+   CHECK( std::fabs( k.volume - ref_volume ) <= std::fabs( c.volume - ref_volume ) + 5e-4 * ref_volume,
+          "%s h %g: clean-up moved the volume by %.2e", name.c_str(), h, k.volume / c.volume - 1 );
+   CHECK( k.below_20 < 0.01 && k.below_20 < 0.1 * c.below_20, "%s h %g: %.2f%% of triangles still under 20 deg",
+          name.c_str(), h, 100 * k.below_20 );
+   CHECK( k.min_angle > c.min_angle, "%s h %g: clean-up did not raise the smallest angle", name.c_str(), h );
+}
+
 // Meshes at each spacing; checks topology; returns the h^2 extrapolation.
 Fit mesh_series( const std::string& name, const std::vector<Ball>& atoms, double p, const Ref& ref,
                  const std::vector<double>& hs ) {
@@ -165,6 +198,9 @@ Fit mesh_series( const std::string& name, const std::vector<Ball>& atoms, double
       CHECK( c.degenerate == 0, "%s h %g: %ld zero-area triangles", name.c_str(), h, c.degenerate );
       for ( const ComponentInfo& ci : c.components ) {
          CHECK( ci.volume > 0, "%s h %g: a component has volume %g", name.c_str(), h, ci.volume );
+      }
+      if ( h >= 0.13 ) {
+         check_clean( name, model, h, mesh, c, ref.area, ref.volume );
       }
       x.push_back( h * h );
       A.push_back( c.area );
@@ -373,6 +409,8 @@ void test_cavity() {
    opt.fill_cavities = false;
    build_mesh( model, opt, kept, ki );
    MeshCheck cf = check_mesh( filled ), ck = check_mesh( kept );
+   check_clean( "cavity shell", model, 0.15, filled, cf, cf.area, cf.volume );
+   check_clean( "cavity shell, kept", model, 0.15, kept, ck, ck.area, ck.volume );
    std::printf( "cavity shell (%zu spheres): filled: %d component(s), volume %.4f, %ld cavity nodes; kept: %d "
                 "components, volumes",
                 atoms.size(), int( cf.components.size() ), cf.volume, fi.cavity_nodes, int( ck.components.size() ) );
@@ -412,6 +450,109 @@ void test_cluster_mesh( unsigned seed, int natoms, double box, double p, double 
    for ( const ComponentInfo& ci : c.components ) {
       CHECK( ci.volume > 0, "cluster %u: a component has volume %g after filling", seed, ci.volume );
    }
+   check_clean( "cluster " + std::to_string( seed ), model, h, mesh, c, c.area, c.volume );
+}
+
+// Reads the whitespace-separated numbers of a line.
+std::vector<double> numbers( const std::string& line ) {
+   std::istringstream in( line );
+   std::vector<double> v;
+   std::string tok;
+   while ( in >> tok ) {
+      char* end = nullptr;
+      double x = std::strtod( tok.c_str(), &end );
+      if ( *end ) {
+         break;
+      }
+      v.push_back( x );
+   }
+   return v;
+}
+
+void test_writers() {
+   SesModel model( { { Vec3( 0.1, 0.2, 0.3 ), 1.7 }, { Vec3( 2.1, 0.2, 0.3 ), 1.5 } }, 1.4 );
+   MeshOptions opt;
+   opt.h = 0.25;
+   Mesh m;
+   BuildInfo info;
+   build_mesh( model, opt, m, info );
+   CleanInfo ci;
+   clean_mesh( model, opt.h, CleanOptions(), m, ci );
+   MeshCheck c = check_mesh( m );
+   const std::string base = "sesmesh_test_io";
+   write_msms( base, "test", m, 2, 1.4, opt.h );
+   write_c3p( base, "test", m, 2, 1.4, 12.5, 34.5 );
+   write_best( base, m, 12.5, 34.5 );
+   write_bod( base, m, 14305, 20, 1.002 );
+   const long nv = long( m.x.size() ), nt = long( m.tri.size() );
+   std::string line;
+   {
+      std::ifstream f( base + ".vert" );
+      std::getline( f, line );
+      std::getline( f, line );
+      std::getline( f, line );
+      std::vector<double> h = numbers( line );
+      long rows = 0;
+      while ( std::getline( f, line ) ) {
+         rows += numbers( line ).size() == 9;
+      }
+      CHECK( !h.empty() && long( h[0] ) == nv && rows == nv, "writers: .vert has %ld of %ld vertices", rows, nv );
+   }
+   {
+      std::ifstream f( base + ".face" );
+      for ( int k = 0; k < 3; ++k ) {
+         std::getline( f, line );
+      }
+      long rows = 0;
+      while ( std::getline( f, line ) ) {
+         rows += numbers( line ).size() == 5;
+      }
+      CHECK( rows == nt, "writers: .face has %ld of %ld triangles", rows, nt );
+   }
+   {
+      std::ifstream f( base + ".c3p" );
+      std::getline( f, line );
+      std::vector<double> h = numbers( line );
+      CHECK( h.size() == 3 && long( h[0] ) == nv && long( h[1] ) == 3 * nt / 2 && long( h[2] ) == nt,
+             "writers: .c3p header" );
+      std::ifstream g( base + ".c3v" );
+      for ( int k = 0; k < 13; ++k ) {
+         std::getline( g, line );
+      }
+      std::vector<double> r = numbers( line );   // component, centre x y z, volume, area, accessible area
+      CHECK( r.size() == 7 && r[4] == 34.5 && r[5] == 12.5, "writers: .c3v line 13 (%s)", line.c_str() );
+   }
+   {
+      std::ifstream f( base + ".best" );
+      std::getline( f, line );
+      std::vector<double> h = numbers( line );
+      CHECK( h.size() == 3 && long( h[0] ) == nt && h[1] == 12.5 && h[2] == 34.5, "writers: .best header" );
+      double area = 0;
+      long rows = 0;
+      while ( std::getline( f, line ) ) {
+         std::vector<double> v = numbers( line );
+         if ( v.size() == 9 ) {
+            ++rows;
+            Vec3 a( v[0], v[1], v[2] ), b( v[3], v[4], v[5] ), cc( v[6], v[7], v[8] );
+            area += 0.5 * norm( cross( b - a, cc - a ) );
+         }
+      }
+      CHECK( rows == nt && std::fabs( area - c.area ) < 1e-6 * c.area, "writers: .best has %ld triangles, area %g", rows,
+             area );
+   }
+   {
+      std::ifstream f( base + ".bod" );
+      long rows = 0, mass = 0;
+      while ( std::getline( f, line ) ) {
+         rows += line.compare( 0, 9, "TRIANGLE " ) == 0;
+         mass += line == "MASS 14305 Da";
+      }
+      CHECK( rows == nt && mass == 1, "writers: .bod has %ld triangles", rows );
+   }
+   for ( const char* ext : { ".vert", ".face", ".c3p", ".c3v", ".best", ".bod" } ) {
+      std::remove( ( base + ext ).c_str() );
+   }
+   std::printf( "writers: msms, c3p, best and bod read back (%ld vertices, %ld triangles)\n", nv, nt );
 }
 
 }  // namespace
@@ -449,6 +590,7 @@ int main() {
    test_cluster_mesh( 7, 12, 6, 1.4, 0.15 );
    test_cluster_mesh( 11, 30, 9, 1.4, 0.12 );
    test_cluster_mesh( 13, 60, 12, 1.4, 0.2 );
+   test_writers();
 
    if ( failures ) {
       std::printf( "%d check(s) FAILED\n", failures );
