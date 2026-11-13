@@ -8,7 +8,7 @@
 // 3. A shell of spheres around a cavity: filled, and kept with -k.
 // 4. A random cluster: the mesh must be a closed manifold.
 // 5. The clean-up keeps every mesh a closed manifold of the same topology, hardly changes its
-//    area and volume, and removes slender triangles.
+//    area and volume, and leaves no angle under 10 degrees.
 // 6. The writers: what they write reads back.
 #include <algorithm>
 #include <cmath>
@@ -171,7 +171,7 @@ void check_clean( const std::string& name, const SesModel& model, double h, cons
           "%s h %g: clean-up moved the volume by %.2e", name.c_str(), h, k.volume / c.volume - 1 );
    CHECK( k.below_20 < 0.01 && k.below_20 < 0.1 * c.below_20, "%s h %g: %.2f%% of triangles still under 20 deg",
           name.c_str(), h, 100 * k.below_20 );
-   CHECK( k.min_angle > c.min_angle, "%s h %g: clean-up did not raise the smallest angle", name.c_str(), h );
+   CHECK( k.min_angle >= 10, "%s h %g: cleaned mesh has an angle of %.2f deg", name.c_str(), h, k.min_angle );
 }
 
 // Meshes at each spacing; checks topology; returns the h^2 extrapolation.

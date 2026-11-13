@@ -9,6 +9,8 @@
 #include <stdexcept>
 #include <string>
 
+#include "parallel.h"
+
 namespace sesmesh {
 
 namespace {
@@ -233,7 +235,60 @@ double solve_root( G&& g, double g0, double g1, long& evals ) {
    return 0.5 * ( a + b );
 }
 
+// Sorts v in parallel: sorted chunks, then rounds of pairwise merges.
+void parallel_sort( std::vector<uint64_t>& v ) {
+   const int nthreads = threads();
+   const size_t n = v.size();
+   if ( nthreads < 2 || n < 100000 ) {
+      std::sort( v.begin(), v.end() );
+      return;
+   }
+   int chunks = 1;
+   while ( chunks < nthreads ) {
+      chunks *= 2;
+   }
+   std::vector<size_t> b( chunks + 1 );
+   for ( int i = 0; i <= chunks; ++i ) {
+      b[i] = n * size_t( i ) / size_t( chunks );
+   }
+   parallel_for( chunks, [&]( long i, int ) { std::sort( v.begin() + b[i], v.begin() + b[i + 1] ); } );
+   std::vector<uint64_t> tmp( n );
+   for ( int width = 1; width < chunks; width *= 2 ) {
+      const int pairs = ( chunks + 2 * width - 1 ) / ( 2 * width );
+      parallel_for( pairs, [&]( long k, int ) {
+         const int i = int( k ) * 2 * width;
+         const size_t lo = b[i], mid = b[std::min( i + width, chunks )], hi = b[std::min( i + 2 * width, chunks )];
+         std::merge( v.begin() + lo, v.begin() + mid, v.begin() + mid, v.begin() + hi, tmp.begin() + lo );
+      } );
+      v.swap( tmp );
+   }
+}
+
 }  // namespace
+
+void mesh_area_volume( const Mesh& m, double& area, double& volume ) {
+   area = volume = 0;
+   if ( m.tri.empty() ) {
+      return;
+   }
+   const Vec3 o = m.x[m.tri[0][0]];
+   const long nt = long( m.tri.size() ), block = 4096, nb = blocks( nt, block );
+   std::vector<double> pa( nb, 0 ), pv( nb, 0 );
+   parallel_for( nb, [&]( long k, int ) {
+      double a = 0, v = 0;
+      for ( long t = k * block; t < std::min( nt, ( k + 1 ) * block ); ++t ) {
+         const Vec3 &A = m.x[m.tri[t][0]], &B = m.x[m.tri[t][1]], &C = m.x[m.tri[t][2]];
+         a += 0.5 * norm( cross( B - A, C - A ) );
+         v += dot( A - o, cross( B - o, C - o ) ) / 6;
+      }
+      pa[k] = a;
+      pv[k] = v;
+   } );
+   for ( long k = 0; k < nb; ++k ) {
+      area += pa[k];
+      volume += pv[k];
+   }
+}
 
 void build_mesh( const SesModel& model, const MeshOptions& opt, Mesh& mesh, BuildInfo& info ) {
    const double h = opt.h;
@@ -282,22 +337,19 @@ void build_mesh( const SesModel& model, const MeshOptions& opt, Mesh& mesh, Buil
 
    // 1. Classify bricks by f at their centres.
    double t0 = now();
-#pragma omp parallel
-   {
-      std::vector<int> cand;
-#pragma omp for schedule( dynamic, 256 )
-      for ( long b = 0; b < nbricks; ++b ) {
-         int bi, bj, bk;
-         g.brick_coords( b, bi, bj, bk );
-         Vec3 xc = g.brick_centre( bi, bj, bk );
-         model.gather( xc, dmax_brick, cand );
-         if ( cand.empty() ) {
-            continue;   // farther than dmax from U: outside
-         }
-         double fc = model.eval( xc, cand, dmax_brick );
-         g.slot[b] = fc > tau ? OUT : ( fc < -tau ? IN : BAND );
+   std::vector<std::vector<int>> cands( threads() );
+   parallel_for( nbricks, [&]( long b, int thread ) {
+      std::vector<int>& cand = cands[thread];
+      int bi, bj, bk;
+      g.brick_coords( b, bi, bj, bk );
+      Vec3 xc = g.brick_centre( bi, bj, bk );
+      model.gather( xc, dmax_brick, cand );
+      if ( cand.empty() ) {
+         return;   // farther than dmax from U: outside
       }
-   }
+      double fc = model.eval( xc, cand, dmax_brick );
+      g.slot[b] = fc > tau ? OUT : ( fc < -tau ? IN : BAND );
+   }, 256 );
    for ( long b = 0; b < nbricks; ++b ) {
       if ( g.slot[b] == BAND ) {
          g.slot[b] = int32_t( g.band.size() );
@@ -316,21 +368,17 @@ void build_mesh( const SesModel& model, const MeshOptions& opt, Mesh& mesh, Buil
    info.seconds_classify = t1 - t0;
 
    // 2. f at every node of the band bricks.
-#pragma omp parallel
-   {
-      std::vector<int> cand;
-#pragma omp for schedule( dynamic, 16 )
-      for ( long s = 0; s < nslots; ++s ) {
-         int bi, bj, bk;
-         g.brick_coords( g.band[s], bi, bj, bk );
-         model.gather( g.brick_centre( bi, bj, bk ), reach, cand );
-         float* fs = &g.f[s * BS3];
-         for ( int l = 0; l < BS3; ++l ) {
-            Vec3 x = g.pos( bi * BS + ( l & 7 ), bj * BS + ( ( l >> 3 ) & 7 ), bk * BS + ( l >> 6 ) );
-            fs[l] = float( model.eval( x, cand, dmax_node ) );
-         }
+   parallel_for( nslots, [&]( long s, int thread ) {
+      std::vector<int>& cand = cands[thread];
+      int bi, bj, bk;
+      g.brick_coords( g.band[s], bi, bj, bk );
+      model.gather( g.brick_centre( bi, bj, bk ), reach, cand );
+      float* fs = &g.f[s * BS3];
+      for ( int l = 0; l < BS3; ++l ) {
+         Vec3 x = g.pos( bi * BS + ( l & 7 ), bj * BS + ( ( l >> 3 ) & 7 ), bk * BS + ( l >> 6 ) );
+         fs[l] = float( model.eval( x, cand, dmax_node ) );
       }
-   }
+   }, 16 );
    info.node_evals = nslots * BS3;
    double t2 = now();
    info.seconds_nodes = t2 - t1;
@@ -472,12 +520,11 @@ void build_mesh( const SesModel& model, const MeshOptions& opt, Mesh& mesh, Buil
    std::vector<std::vector<uint16_t>> keys( nslots );
    std::vector<std::vector<VRec>> vrec( nslots );
    std::atomic<bool> failed( false );
-   long root_evals = 0;
-#pragma omp parallel reduction( + : root_evals )
+   std::vector<long> evals_t( threads(), 0 );
    {
-      std::vector<int> cand;
-#pragma omp for schedule( dynamic, 16 )
-      for ( long s = 0; s < nslots; ++s ) {
+      parallel_for( nslots, [&]( long s, int thread ) {
+         std::vector<int>& cand = cands[thread];
+         long& root_evals = evals_t[thread];
          int bi, bj, bk;
          g.brick_coords( g.band[s], bi, bj, bk );
          bool gathered = false;
@@ -522,12 +569,14 @@ void build_mesh( const SesModel& model, const MeshOptions& opt, Mesh& mesh, Buil
                vrec[s].push_back( { x, nrm, inf.atom, inf.feature } );
             }
          }
-      }
+      }, 16 );
    }
    if ( failed ) {
       throw std::logic_error( "a cut edge leaves the band" );
    }
-   info.root_evals = root_evals;
+   for ( long e : evals_t ) {
+      info.root_evals += e;
+   }
    std::vector<long> base( nslots + 1, 0 );
    for ( long s = 0; s < nslots; ++s ) {
       base[s + 1] = base[s] + long( vrec[s].size() );
@@ -540,8 +589,7 @@ void build_mesh( const SesModel& model, const MeshOptions& opt, Mesh& mesh, Buil
    mesh.n.resize( nv );
    mesh.atom.resize( nv );
    mesh.feature.resize( nv );
-#pragma omp parallel for schedule( dynamic, 64 )
-   for ( long s = 0; s < nslots; ++s ) {
+   parallel_for( nslots, [&]( long s, int ) {
       for ( size_t k = 0; k < vrec[s].size(); ++k ) {
          const VRec& r = vrec[s][k];
          long v = base[s] + long( k );
@@ -551,7 +599,7 @@ void build_mesh( const SesModel& model, const MeshOptions& opt, Mesh& mesh, Buil
          mesh.feature[v] = r.feature;
       }
       std::vector<VRec>().swap( vrec[s] );
-   }
+   }, 64 );
    double t4 = now();
    info.seconds_vertices = t4 - t3;
 
@@ -571,8 +619,7 @@ void build_mesh( const SesModel& model, const MeshOptions& opt, Mesh& mesh, Buil
       return base[s] + long( it - ks.begin() );
    };
    std::vector<std::vector<std::array<int, 3>>> tris( nslots );
-#pragma omp parallel for schedule( dynamic, 16 )
-   for ( long s = 0; s < nslots; ++s ) {
+   parallel_for( nslots, [&]( long s, int ) {
       int bi, bj, bk;
       g.brick_coords( g.band[s], bi, bj, bk );
       for ( int l = 0; l < BS3; ++l ) {
@@ -620,7 +667,7 @@ void build_mesh( const SesModel& model, const MeshOptions& opt, Mesh& mesh, Buil
             }
          }
       }
-   }
+   }, 16 );
    if ( failed ) {
       throw std::logic_error( "a triangle has a vertex on an uncut edge" );
    }
@@ -629,11 +676,10 @@ void build_mesh( const SesModel& model, const MeshOptions& opt, Mesh& mesh, Buil
       tbase[s + 1] = tbase[s] + long( tris[s].size() );
    }
    mesh.tri.resize( tbase[nslots] );
-#pragma omp parallel for schedule( dynamic, 64 )
-   for ( long s = 0; s < nslots; ++s ) {
+   parallel_for( nslots, [&]( long s, int ) {
       std::copy( tris[s].begin(), tris[s].end(), mesh.tri.begin() + tbase[s] );
       std::vector<std::array<int, 3>>().swap( tris[s] );
-   }
+   }, 64 );
    info.seconds_triangles = now() - t4;
 }
 
@@ -653,22 +699,34 @@ MeshCheck check_mesh( const Mesh& m ) {
    std::vector<double> minang( nt );
    double area = 0, vol = 0;
    long degenerate = 0;
-#pragma omp parallel for reduction( + : area, vol, degenerate )
-   for ( long t = 0; t < nt; ++t ) {
-      const Vec3 &A = m.x[m.tri[t][0]], &B = m.x[m.tri[t][1]], &C = m.x[m.tri[t][2]];
-      Vec3 cr = cross( B - A, C - A );
-      double a2 = norm( cr );
-      area += 0.5 * a2;
-      vol += dot( A - o, cross( B - o, C - o ) ) / 6;
-      if ( a2 == 0 ) {
-         ++degenerate;
-         minang[t] = 0;
-         continue;
+   {
+      // Sums per fixed block, added in order: the same whatever the number of threads.
+      const long block = 4096, nb = blocks( nt, block );
+      std::vector<double> pa( nb, 0 ), pv( nb, 0 );
+      std::vector<long> pd( nb, 0 );
+      parallel_for( nb, [&]( long kb, int ) {
+         for ( long t = kb * block; t < std::min( nt, ( kb + 1 ) * block ); ++t ) {
+            const Vec3 &A = m.x[m.tri[t][0]], &B = m.x[m.tri[t][1]], &C = m.x[m.tri[t][2]];
+            Vec3 cr = cross( B - A, C - A );
+            double a2 = norm( cr );
+            pa[kb] += 0.5 * a2;
+            pv[kb] += dot( A - o, cross( B - o, C - o ) ) / 6;
+            if ( a2 == 0 ) {
+               ++pd[kb];
+               minang[t] = 0;
+               continue;
+            }
+            double angA = std::atan2( a2, dot( B - A, C - A ) );
+            double angB = std::atan2( a2, dot( A - B, C - B ) );
+            double angC = 3.14159265358979323846 - angA - angB;
+            minang[t] = deg * std::min( angA, std::min( angB, angC ) );
+         }
+      } );
+      for ( long kb = 0; kb < nb; ++kb ) {
+         area += pa[kb];
+         vol += pv[kb];
+         degenerate += pd[kb];
       }
-      double angA = std::atan2( a2, dot( B - A, C - A ) );
-      double angB = std::atan2( a2, dot( A - B, C - B ) );
-      double angC = 3.14159265358979323846 - angA - angB;
-      minang[t] = deg * std::min( angA, std::min( angB, angC ) );
    }
    c.area = area;
    c.volume = vol;
@@ -690,15 +748,14 @@ MeshCheck check_mesh( const Mesh& m ) {
    // Edges: each must be in exactly two triangles, once each way.
    {
       std::vector<uint64_t> e( 3 * nt );
-#pragma omp parallel for
-      for ( long t = 0; t < nt; ++t ) {
+      parallel_for( nt, [&]( long t, int ) {
          for ( int k = 0; k < 3; ++k ) {
             uint64_t a = uint64_t( m.tri[t][k] ), b = uint64_t( m.tri[t][( k + 1 ) % 3] );
             uint64_t lo = std::min( a, b ), hi = std::max( a, b );
             e[3 * t + k] = ( lo << 33 ) | ( hi << 1 ) | ( a > b ? 1 : 0 );
          }
-      }
-      std::sort( e.begin(), e.end() );
+      }, 4096 );
+      parallel_sort( e );
       for ( size_t i = 0; i < e.size(); ) {
          size_t j = i;
          int fwd = 0;
@@ -738,13 +795,12 @@ MeshCheck check_mesh( const Mesh& m ) {
          }
       }
    }
-   long unused = 0, nmv = 0;
-#pragma omp parallel for reduction( + : unused, nmv ) schedule( dynamic, 1024 )
-   for ( long v = 0; v < nv; ++v ) {
+   std::vector<long> unused_t( threads(), 0 ), nmv_t( threads(), 0 );
+   parallel_for( nv, [&]( long v, int thread ) {
       long b = start[v], n = start[v + 1] - start[v];
       if ( n == 0 ) {
-         ++unused;
-         continue;
+         ++unused_t[thread];
+         return;
       }
       int first = wedge[b][0], cur = wedge[b][1];
       long steps = 1;
@@ -765,8 +821,13 @@ MeshCheck check_mesh( const Mesh& m ) {
          }
       }
       if ( !ok || steps != n ) {
-         ++nmv;
+         ++nmv_t[thread];
       }
+   }, 1024 );
+   long unused = 0, nmv = 0;
+   for ( size_t k = 0; k < unused_t.size(); ++k ) {
+      unused += unused_t[k];
+      nmv += nmv_t[k];
    }
    c.unused_vertices = unused;
    c.nonmanifold_vertices = nmv;

@@ -75,4 +75,7 @@ struct MeshCheck {
 
 MeshCheck check_mesh( const Mesh& mesh );
 
+// Area and volume only (the polyhedron's), as check_mesh computes them.
+void mesh_area_volume( const Mesh& mesh, double& area, double& volume );
+
 }  // namespace sesmesh
