@@ -1,0 +1,173 @@
+ Rcoal Ver. 3.0
+ SFSU, Aragon Lab.
+  
+ Target values of n
+                      1200
+                      2000
+  
+  
+ Begin Coalesce Processing
+  
+ basename = crn                                                                             
+ Finished deleting small triangles: Pass=            1
+  
+  
+ ******Now checking new edge list*******
+        6738  New unique edges found
+  
+ Finished deleting small triangles: Pass=            2
+  
+           4  Slender obtuse triangles found!
+ Processed            4  obtuse slender triangles.
+   
+ COALESCE PROCESS RESULTS -Version=    3.5000000000000000     
+  
+ Input File (Connolly): crn.c3p                                                                         
+  Edge fraction =   0.69999999999999996     
+  
+  Beginning polygon Area =     2631.3306971636766     
+ Number of triangle records, pass 1=         5962
+ Number of degenerate triangles, pass 1=            0
+ Number of small triangles deleted, pass 1=         1470
+ Number of polygons generated, pass 1=         4492
+ Total area, pass 1 =    2625.7685046371730     
+  
+ Number of small triangles deleted, pass 2=         1058
+ Number of polygons generated, pass 2=         3434
+ Total area, pass 2 =    2617.0213630011144     
+ Average Triangle Area (A^2)=   0.76209125305798320     
+ Average edgelength (A)=    1.2107552447542287     
+ Cut-off length (A) =   0.84752867132796017     
+ Found           4  slender obtuse triangles, processed           4
+ Collapses skipped by the topology check:            0
+ Flips skipped by the topology check:            0
+ Just finished first scoalesce call
+  
+ Begin Coalesce Processing
+  
+ basename = crn                                                                             
+ Finished deleting small triangles: Pass=            1
+  
+  
+ ******Now checking new edge list*******
+        3513  New unique edges found
+  
+ Finished deleting small triangles: Pass=            2
+  
+           3  Slender obtuse triangles found!
+ Processed            3  obtuse slender triangles.
+   
+ COALESCE PROCESS RESULTS -Version=    3.5000000000000000     
+  
+ Input File (Connolly): crn.c3p                                                                         
+  Edge fraction =    1.0000000000000000     
+  
+  Beginning polygon Area =     2631.3306971636766     
+ Number of triangle records, pass 1=         5962
+ Number of degenerate triangles, pass 1=            0
+ Number of small triangles deleted, pass 1=         3620
+ Number of polygons generated, pass 1=         2342
+ Total area, pass 1 =    2598.0510275091283     
+  
+ Number of small triangles deleted, pass 2=         1568
+ Number of polygons generated, pass 2=          774
+ Total area, pass 2 =    2492.5883344851691     
+ Average Triangle Area (A^2)=    3.2203983649679189     
+ Average edgelength (A)=    1.6998784635522171     
+ Cut-off length (A) =    1.6998784635522171     
+ Found           3  slender obtuse triangles, processed           3
+ Collapses skipped by the topology check:            0
+ Flips skipped by the topology check:            0
+ initial n         3434         774
+  p =    6.1928346680183397     
+  a =    6.7028423772609820     
+  e =   0.91883945421478552     
+  
+ Begin Coalesce Processing
+  
+ basename = crn                                                                             
+ Finished deleting small triangles: Pass=            1
+  
+  
+ ******Now checking new edge list*******
+        4101  New unique edges found
+  
+ Finished deleting small triangles: Pass=            2
+  
+           8  Slender obtuse triangles found!
+ Processed            8  obtuse slender triangles.
+   
+ COALESCE PROCESS RESULTS -Version=    3.5000000000000000     
+  
+ Input File (Connolly): crn.c3p                                                                         
+  Edge fraction =   0.91883945421478552     
+  
+  Beginning polygon Area =     2631.3306971636766     
+ Number of triangle records, pass 1=         5962
+ Number of degenerate triangles, pass 1=            0
+ Number of small triangles deleted, pass 1=         3228
+ Number of polygons generated, pass 1=         2734
+ Total area, pass 1 =    2607.3023212166868     
+  
+ Number of small triangles deleted, pass 2=         1634
+ Number of polygons generated, pass 2=         1100
+ Total area, pass 2 =    2546.5632573432845     
+ Average Triangle Area (A^2)=    2.3150575066757133     
+ Average edgelength (A)=    1.5693492644518283     
+ Cut-off length (A) =    1.4419800216212930     
+ Found           8  slender obtuse triangles, processed           8
+ Collapses skipped by the topology check:            0
+ Flips skipped by the topology check:            0
+ Target n                 1200
+ Actual coalesce n        1100
+  
+  e =   0.82133100933444647     
+  
+ Begin Coalesce Processing
+  
+ basename = crn                                                                             
+ Finished deleting small triangles: Pass=            1
+  
+  
+ ******Now checking new edge list*******
+        5121  New unique edges found
+  
+ Finished deleting small triangles: Pass=            2
+  
+           9  Slender obtuse triangles found!
+ Processed            9  obtuse slender triangles.
+   
+ COALESCE PROCESS RESULTS -Version=    3.5000000000000000     
+  
+ Input File (Connolly): crn.c3p                                                                         
+  Edge fraction =   0.82133100933444647     
+  
+  Beginning polygon Area =     2631.3306971636766     
+ Number of triangle records, pass 1=         5962
+ Number of degenerate triangles, pass 1=            0
+ Number of small triangles deleted, pass 1=         2548
+ Number of polygons generated, pass 1=         3414
+ Total area, pass 1 =    2617.3461797719478     
+  
+ Number of small triangles deleted, pass 2=         1596
+ Number of polygons generated, pass 2=         1818
+ Total area, pass 2 =    2585.7976874441524     
+ Average Triangle Area (A^2)=    1.4223309611904029     
+ Average edgelength (A)=    1.3984449254458671     
+ Cut-off length (A) =    1.1485861821150887     
+ Found           9  slender obtuse triangles, processed           9
+ Collapses skipped by the topology check:            0
+ Flips skipped by the topology check:            0
+ Target n                 2000
+ Actual coalesce n        1818
+  
+  
+  Output files written:
+                       crn_01100                                                                       
+                       crn_01100.his                                                                   
+  
+  
+  Output files written:
+                       crn_01818                                                                       
+                       crn_01818.his                                                                   
+  
