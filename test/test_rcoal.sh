@@ -6,12 +6,15 @@
 # Inputs, in test/rcoal:
 #  - 1crn.face, 1crn.vert, 1crn.msms.log: crambin from MSMS, best-hydro's rcoal 3.0 example;
 #  - crn.c3p.gz, crn.c3v: crambin from sesmesh (main e5f329b),
-#    sesmesh -p 1.5 -n 6000 -f c3p, from msroll's radii; 5962 triangles.
+#    sesmesh -p 1.5 -n 6000 -f c3p crn.xyzr; 5962 triangles;
+#  - crn.xyzr: crambin's atoms with msroll's radii.
 # For each case, NAME.sha256 holds the sha256 of each file the Fortran wrote and NAME.stdout
 # its stdout; it wrote nothing to stderr and exited with 0.  The Fortran was built with
 # best-hydro's Makefile (gfortran 13, Linux x86-64).
 #
-# Then -search, which the Fortran does not have, must reach each target within 1%.
+# Then -search, which the Fortran does not have, must reach each target within 1%.  Last,
+# sesmesh -C, on crambin (crn.xyzr), must write the same meshes as rcoal -search does from the
+# .c3p of the same run.
 set -u
 top=$(cd "$(dirname "$0")/.." && pwd)
 data=$top/test/rcoal
@@ -91,6 +94,49 @@ if [ $rc -ne 0 ] || [ -s stderr ] || [ "$nfiles" -ne 3 ] || echo "$res" | grep -
    fail=1
 else
    echo "rcoal -search: $res"
+fi
+cd "$top" || exit 1
+
+# sesmesh -C must write the meshes rcoal -search writes from the .c3p of the same run; the .his
+# files differ only in line 3, the input file's name.
+d=$work/coarsen
+rm -rf "$d"
+mkdir -p "$d/ses" "$d/rc"
+cd "$d/ses" || exit 1
+cp "$data/crn.xyzr" .
+"$top/bin/sesmesh" -p 1.5 -n 6000 -f c3p -C 1500,2500,3 crn.xyzr > stdout 2> stderr
+rc=$?
+cd "$d/rc" || exit 1
+cp ../ses/crn.c3p ../ses/crn.c3v .
+"$top/bin/rcoal" -f crn.c3p -nmax 2500 -nmin 1500 -n 3 -search > stdout 2> stderr
+ok=1
+if [ $rc -ne 0 ] || [ -s ../ses/stderr ]; then
+   echo "FAIL sesmesh -C: exit code $rc"
+   cat ../ses/stderr
+   ok=0
+fi
+meshes=$(ls crn_????? 2> /dev/null)
+if [ "$(echo $meshes)" != "$(cd ../ses && echo $(ls crn_????? 2> /dev/null))" ] || [ $(echo $meshes | wc -w) -ne 3 ]; then
+   echo "FAIL sesmesh -C: wrote [$(cd ../ses && echo $(ls crn_????? 2> /dev/null))], rcoal -search [$(echo $meshes)]"
+   ok=0
+fi
+for m in $meshes; do
+   if ! cmp -s "$m" "../ses/$m"; then
+      echo "FAIL sesmesh -C: $m differs from rcoal -search's"
+      ok=0
+   fi
+   sed 3d "$m.his" > his.rc
+   sed 3d "../ses/$m.his" > his.ses
+   if ! cmp -s his.rc his.ses; then
+      echo "FAIL sesmesh -C: $m.his differs from rcoal -search's beyond the input name"
+      diff his.rc his.ses | head -10
+      ok=0
+   fi
+done
+if [ $ok -eq 1 ]; then
+   echo "sesmesh -C: $(echo $meshes) identical to rcoal -search's"
+else
+   fail=1
 fi
 cd "$top" || exit 1
 
