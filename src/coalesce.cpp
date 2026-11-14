@@ -493,11 +493,24 @@ double find_edgfrac( const Surface& s, int target, int* n ) {
    auto count = [&]( double e ) { return coalesce( s, e ).st.npoly; };
    double lo = 0.05, hi = 0.7;
    int nlo = count( lo ), nhi = count( hi );
+   double efew = hi;   // the e that has left the fewest triangles so far
+   int nfew = nhi;
    while ( nhi > target && hi < 20 ) {
       lo = hi;
       nlo = nhi;
       hi *= 1.5;
       nhi = count( hi );
+      if ( nhi < nfew ) {
+         efew = hi;
+         nfew = nhi;
+      }
+   }
+   if ( nhi > target ) {
+      // below what Coalesce can reach from this mesh: nothing to bisect
+      if ( n ) {
+         *n = nfew;
+      }
+      return efew;
    }
    for ( int it = 0; it < 40 && nlo != target && nhi != target; ++it ) {
       double mid = 0.5 * ( lo + hi );
