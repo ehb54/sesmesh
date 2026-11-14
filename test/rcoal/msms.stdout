@@ -1,0 +1,251 @@
+ Rcoal Ver. 3.0
+ SFSU, Aragon Lab.
+  
+ Target values of n
+                      1500
+                      2000
+                      2500
+  
+  
+ Begin Coalesce Processing
+  
+ basename = 1crn                                                                            
+ Number triangles =         3112
+        4668  unique edges found
+ Input file = 1crn.msms.log                                                                   
+ Areas: True, Poly =    2708.2480000000000        2605.1480000000001     
+ Volumes: True, Poly =   8351.2479999999996        8351.2479999999996     
+ Finished deleting small triangles: Pass=            1
+  
+  
+ ******Now checking new edge list*******
+        2316  New unique edges found
+  
+ Finished deleting small triangles: Pass=            2
+  
+           1  Slender obtuse triangles found!
+ Processed            1  obtuse slender triangles.
+   
+ COALESCE PROCESS RESULTS -Version=    3.5000000000000000     
+  
+ Input File (Sanner): 1crn.face                                                                       
+  Edge fraction =   0.69999999999999996     
+  
+  Beginning polygon Area =     2120.0821198133499     
+ Number of triangle records, pass 1=         3112
+ Number of degenerate triangles, pass 1=            0
+ Number of small triangles deleted, pass 1=         1568
+ Number of polygons generated, pass 1=         1544
+ Total area, pass 1 =    2104.7325367790863     
+  
+ Number of small triangles deleted, pass 2=          540
+ Number of polygons generated, pass 2=         1004
+ Total area, pass 2 =    2069.6031280808047     
+ Average Triangle Area (A^2)=    2.0613576972916383     
+ Average edgelength (A)=    1.8858763634516549     
+ Cut-off length (A) =    1.3201134544161583     
+ Found           1  slender obtuse triangles, processed           1
+ Collapses skipped by the topology check:            0
+ Flips skipped by the topology check:            0
+ Just finished first scoalesce call
+  
+ Begin Coalesce Processing
+  
+ basename = 1crn                                                                            
+ Number triangles =         3112
+        4668  unique edges found
+ Input file = 1crn.msms.log                                                                   
+ Areas: True, Poly =    2708.2480000000000        2605.1480000000001     
+ Volumes: True, Poly =   8351.2479999999996        8351.2479999999996     
+ Finished deleting small triangles: Pass=            1
+  
+  
+ ******Now checking new edge list*******
+        1647  New unique edges found
+  
+ Finished deleting small triangles: Pass=            2
+  
+           5  Slender obtuse triangles found!
+ Processed            5  obtuse slender triangles.
+   
+ COALESCE PROCESS RESULTS -Version=    3.5000000000000000     
+  
+ Input File (Sanner): 1crn.face                                                                       
+  Edge fraction =    1.0000000000000000     
+  
+  Beginning polygon Area =     2120.0821198133499     
+ Number of triangle records, pass 1=         3112
+ Number of degenerate triangles, pass 1=            0
+ Number of small triangles deleted, pass 1=         2014
+ Number of polygons generated, pass 1=         1098
+ Total area, pass 1 =    2076.1065193148065     
+  
+ Number of small triangles deleted, pass 2=          748
+ Number of polygons generated, pass 2=          350
+ Total area, pass 2 =    1920.7333146575907     
+ Average Triangle Area (A^2)=    5.4878094704502587     
+ Average edgelength (A)=    2.2172150480068296     
+ Cut-off length (A) =    2.2172150480068296     
+ Found           5  slender obtuse triangles, processed           5
+ Collapses skipped by the topology check:            1
+ Flips skipped by the topology check:            0
+ initial n         1004         350
+  p =    3.7121462905553400     
+  a =    7.8914285714285706     
+  e =   0.58444494636405431     
+  
+ Begin Coalesce Processing
+  
+ basename = 1crn                                                                            
+ Number triangles =         3112
+        4668  unique edges found
+ Input file = 1crn.msms.log                                                                   
+ Areas: True, Poly =    2708.2480000000000        2605.1480000000001     
+ Volumes: True, Poly =   8351.2479999999996        8351.2479999999996     
+ Finished deleting small triangles: Pass=            1
+  
+  
+ ******Now checking new edge list*******
+        2547  New unique edges found
+  
+ Finished deleting small triangles: Pass=            2
+  
+           3  Slender obtuse triangles found!
+ Processed            3  obtuse slender triangles.
+   
+ COALESCE PROCESS RESULTS -Version=    3.5000000000000000     
+  
+ Input File (Sanner): 1crn.face                                                                       
+  Edge fraction =   0.58444494636405431     
+  
+  Beginning polygon Area =     2120.0821198133499     
+ Number of triangle records, pass 1=         3112
+ Number of degenerate triangles, pass 1=            0
+ Number of small triangles deleted, pass 1=         1414
+ Number of polygons generated, pass 1=         1698
+ Total area, pass 1 =    2105.6434711789339     
+  
+ Number of small triangles deleted, pass 2=          308
+ Number of polygons generated, pass 2=         1390
+ Total area, pass 2 =    2097.8166814906708     
+ Average Triangle Area (A^2)=    1.5092206341659502     
+ Average edgelength (A)=    1.7982802217892082     
+ Cut-off length (A) =    1.0509957877711336     
+ Found           3  slender obtuse triangles, processed           3
+ Collapses skipped by the topology check:            0
+ Flips skipped by the topology check:            0
+ Target n                 1500
+ Actual coalesce n        1390
+  
+  e =   0.48937933443893739     
+  
+ Begin Coalesce Processing
+  
+ basename = 1crn                                                                            
+ Number triangles =         3112
+        4668  unique edges found
+ Input file = 1crn.msms.log                                                                   
+ Areas: True, Poly =    2708.2480000000000        2605.1480000000001     
+ Volumes: True, Poly =   8351.2479999999996        8351.2479999999996     
+ Finished deleting small triangles: Pass=            1
+  
+  
+ ******Now checking new edge list*******
+        2790  New unique edges found
+  
+ Finished deleting small triangles: Pass=            2
+  
+           1  Slender obtuse triangles found!
+ Processed            1  obtuse slender triangles.
+   
+ COALESCE PROCESS RESULTS -Version=    3.5000000000000000     
+  
+ Input File (Sanner): 1crn.face                                                                       
+  Edge fraction =   0.48937933443893739     
+  
+  Beginning polygon Area =     2120.0821198133499     
+ Number of triangle records, pass 1=         3112
+ Number of degenerate triangles, pass 1=            0
+ Number of small triangles deleted, pass 1=         1252
+ Number of polygons generated, pass 1=         1860
+ Total area, pass 1 =    2105.8394670727471     
+  
+ Number of small triangles deleted, pass 2=          248
+ Number of polygons generated, pass 2=         1612
+ Total area, pass 2 =    2102.2002802649813     
+ Average Triangle Area (A^2)=    1.3040944666656211     
+ Average edgelength (A)=    1.7197618405780553     
+ Cut-off length (A) =   0.84161590493557059     
+ Found           1  slender obtuse triangles, processed           1
+ Collapses skipped by the topology check:            0
+ Flips skipped by the topology check:            0
+ Target n                 2000
+ Actual coalesce n        1612
+  
+  e =   0.39234966189002285     
+  
+ Begin Coalesce Processing
+  
+ basename = 1crn                                                                            
+ Number triangles =         3112
+        4668  unique edges found
+ Input file = 1crn.msms.log                                                                   
+ Areas: True, Poly =    2708.2480000000000        2605.1480000000001     
+ Volumes: True, Poly =   8351.2479999999996        8351.2479999999996     
+ Finished deleting small triangles: Pass=            1
+  
+  
+ ******Now checking new edge list*******
+        3381  New unique edges found
+  
+ Finished deleting small triangles: Pass=            2
+  
+           2  Slender obtuse triangles found!
+ Processed            2  obtuse slender triangles.
+   
+ COALESCE PROCESS RESULTS -Version=    3.5000000000000000     
+  
+ Input File (Sanner): 1crn.face                                                                       
+  Edge fraction =   0.39234966189002285     
+  
+  Beginning polygon Area =     2120.0821198133499     
+ Number of triangle records, pass 1=         3112
+ Number of degenerate triangles, pass 1=            0
+ Number of small triangles deleted, pass 1=          858
+ Number of polygons generated, pass 1=         2254
+ Total area, pass 1 =    2113.8760055402131     
+  
+ Number of small triangles deleted, pass 2=          174
+ Number of polygons generated, pass 2=         2080
+ Total area, pass 2 =    2109.8974014678397     
+ Average Triangle Area (A^2)=    1.0143737507056922     
+ Average edgelength (A)=    1.5712098621922093     
+ Cut-off length (A) =   0.61646365818938276     
+ Found           2  slender obtuse triangles, processed           2
+ Collapses skipped by the topology check:            0
+ Flips skipped by the topology check:            0
+  
+ ************************
+ N =          2080
+ ALERT!           15  Triangles with Area< 20% average area Remain!
+ Review histogram.
+ Edgefrac =   0.39234966189002285     
+ ************************
+ Target n                 2500
+ Actual coalesce n        2080
+  
+  
+  Output files written:
+                       1crn_01390                                                                      
+                       1crn_01390.his                                                                  
+  
+  
+  Output files written:
+                       1crn_01612                                                                      
+                       1crn_01612.his                                                                  
+  
+  
+  Output files written:
+                       1crn_02080                                                                      
+                       1crn_02080.his                                                                  
+  

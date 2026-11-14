@@ -1,0 +1,13 @@
+molecule name           = crn
+number of atoms         =        327
+probe radius            =          1.500
+contact area            =          0.000
+reentrant area          =          0.000
+molecular area          =       2631.331
+accessible area         =          0.000
+solvent-excluded volume =       8143.905
+
+component           center              volume    molecular  accessible
+ number      x        y        z                    area       area
+
+    1       9.468    9.912    7.039    8143.905    2631.331       0.000

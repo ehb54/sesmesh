@@ -1,0 +1,43 @@
+ Rcoal Ver. 2.0
+ SFSU, Aragon Lab.
+  
+ Begin Coalesce Processing
+  
+ Finished deleting small triangles: Pass=            1
+  
+  
+ ******Now checking new edge list*******
+        5373  New unique edges found
+  
+ Finished deleting small triangles: Pass=            2
+  
+           6  Slender obtuse triangles found!
+ Processed            6  obtuse slender triangles.
+   
+ COALESCE PROCESS RESULTS -Version=    3.1000000000000001     
+  
+ Input File (Connolly): crn.c3p                                                                         
+  Edge fraction =   0.80000000000000004     
+  
+  Beginning polygon Area =     2631.3306971636766     
+ Number of triangle records, pass 1=         5962
+ Number of degenerate triangles, pass 1=            0
+ Number of small triangles deleted, pass 1=         2380
+ Number of polygons generated, pass 1=         3582
+ Total area, pass 1 =    2619.2802199354114     
+  
+ Number of small triangles deleted, pass 2=         1518
+ Number of polygons generated, pass 2=         2064
+ Total area, pass 2 =    2590.6512515133500     
+ Average Triangle Area (A^2)=    1.2551604900742974     
+ Average edgelength (A)=    1.3648939559564766     
+ Cut-off length (A) =    1.0919151647651812     
+ Found           6  slender obtuse triangles, processed           6
+ Collapses skipped by the topology check:            0
+ Flips skipped by the topology check:            0
+ Actual coalesce n        2064
+  
+  Output files written:
+                       crn_02064                                                                       
+                       crn_02064.his                                                                   
+  
