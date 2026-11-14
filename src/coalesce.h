@@ -23,6 +23,7 @@
 #pragma once
 
 #include <array>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -75,7 +76,16 @@ Result coalesce( const Surface& s, double edgfrac, std::vector<std::string>* log
 // then up to 40 halvings, stopping early on an exact hit.  This replaces rcoal's two-run fit of
 // N(e) = N0 / (1 + a e^p), which can miss the target by 20% on marching-cubes and
 // marching-tetrahedra input.  If n is not null it receives the number of triangles reached.
+//
+// Coalesce cannot coarsen a mesh without limit: from a fine mesh it stops at about 1/30 to 1/40
+// of the input's triangles (lysozyme: 204,532 triangles to 5700 at best), however large e is.
+// When e = 20 still leaves more than target triangles, the search stops and returns the e, of
+// those tried, that left the fewest.
 double find_edgfrac( const Surface& s, int target, int* n = nullptr );
+
+// True when n misses target by more than 1%: then the target is below what Coalesce can reach
+// from this mesh (n > target), or the bisection found no closer count.
+inline bool target_missed( int target, int n ) { return std::abs( n - target ) * 100L > target; }
 
 // The Fortran's area of a triangle (subroutine areas).
 double tri_area( const V3& a, const V3& b, const V3& c );

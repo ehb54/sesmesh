@@ -205,6 +205,11 @@ int main( int argc, char** argv ) {
             out( ListRecord().c( "Actual coalesce n" ).i( nn ) );
             if ( !search ) {
                out( ListRecord().c( " " ) );
+            } else if ( target_missed( nt[j], nn ) ) {
+               // (not for the Fortran's own fit, whose stderr stays the Fortran's)
+               std::cerr << prog << ": warning: target " << nt[j] << " not reached: " << nn << " triangles at e "
+                         << e << ( nn > nt[j] ? "; Coalesce cannot coarsen this mesh further: use a coarser input mesh" : "" )
+                         << '\n';
             }
          }
       }

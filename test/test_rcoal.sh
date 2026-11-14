@@ -12,7 +12,8 @@
 # its stdout; it wrote nothing to stderr and exited with 0.  The Fortran was built with
 # best-hydro's Makefile (gfortran 13, Linux x86-64).
 #
-# Then -search, which the Fortran does not have, must reach each target within 1%.  Last,
+# Then -search, which the Fortran does not have, must reach each target within 1%, and warn for a
+# target below what Coalesce can reach.  Last,
 # sesmesh -C, on crambin (crn.xyzr), must write the same meshes as rcoal -search does from the
 # .c3p of the same run.
 set -u
@@ -97,6 +98,21 @@ else
 fi
 cd "$top" || exit 1
 
+# A target below what Coalesce can reach (crn.c3p goes no lower than about 150 triangles): a
+# warning on stderr, and the closest mesh is still written.
+setup floor
+"$top/bin/rcoal" -f crn.c3p -nmax 20 -nmin 20 -n 1 -search > stdout 2> stderr
+rc=$?
+nfiles=$(ls crn_?????.his 2> /dev/null | wc -l | tr -d ' ')
+if [ $rc -ne 0 ] || ! grep -q 'warning: target 20 not reached' stderr || [ "$nfiles" -ne 1 ]; then
+   echo "FAIL search floor: exit code $rc, $nfiles meshes, stderr:"
+   cat stderr
+   fail=1
+else
+   echo "rcoal -search below the floor: $(sed 's/^rcoal: //' stderr)"
+fi
+cd "$top" || exit 1
+
 # sesmesh -C must write the meshes rcoal -search writes from the .c3p of the same run; the .his
 # files differ only in line 3, the input file's name.
 d=$work/coarsen
@@ -133,10 +149,25 @@ for m in $meshes; do
       ok=0
    fi
 done
+if grep -q 'WARNING: -C' ../ses/stdout; then
+   echo "FAIL sesmesh -C: a warning for reachable targets:"
+   grep 'WARNING: -C' ../ses/stdout
+   ok=0
+fi
 if [ $ok -eq 1 ]; then
    echo "sesmesh -C: $(echo $meshes) identical to rcoal -search's"
 else
    fail=1
+fi
+# and below the floor, a warning
+cd "$d/ses" || exit 1
+"$top/bin/sesmesh" -p 1.5 -n 6000 -f none -C 20 -o floor crn.xyzr > floor.stdout 2> floor.stderr
+rc=$?
+if [ $rc -ne 0 ] || ! grep -q 'WARNING: -C target 20 not reached' floor.stdout; then
+   echo "FAIL sesmesh -C below the floor: exit code $rc, no warning"
+   fail=1
+else
+   echo "sesmesh -C below the floor: $(grep 'WARNING: -C' floor.stdout | cut -c1-60)..."
 fi
 cd "$top" || exit 1
 

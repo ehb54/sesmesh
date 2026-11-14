@@ -213,6 +213,15 @@ void coarsen( const Mesh& mesh, double area, double volume, const std::string& i
          std::printf( ", %d under 20%% of the mean area", nsmall );
       }
       std::printf( "; wrote %s, %s\n", written[before].c_str(), written[before + 1].c_str() );
+      if ( rcoal::target_missed( int( target[j] ), r.st.npoly ) ) {
+         if ( r.st.npoly > target[j] ) {
+            std::printf( "WARNING: -C target %ld not reached: Coalesce cannot coarsen this %zu-triangle mesh below about "
+                         "%d triangles; for this target use a coarser mesh (a larger -g or a smaller -n)\n",
+                         target[j], mesh.tri.size(), r.st.npoly );
+         } else {
+            std::printf( "WARNING: -C target %ld not reached: the closest is %d triangles\n", target[j], r.st.npoly );
+         }
+      }
    }
 }
 

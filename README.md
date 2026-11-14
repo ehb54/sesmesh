@@ -135,6 +135,15 @@ it misses:
 a few triangles. Its meshes are therefore not the Fortran's, and `make test` checks only that
 they reach their targets.
 
+**The floor.** Coalesce cannot coarsen a mesh much beyond about 30–40 times.
+- **Examples.** Lysozyme's 204,532-triangle mesh gives 5700 triangles at best, and crambin's
+  5962-triangle mesh gives 146, however large e is.
+- **When a target is below that floor,** `-search` and `sesmesh -C` still write the closest mesh,
+  but warn: `rcoal` on stderr, `sesmesh` on stdout.
+- **What to do.** Start from a coarser mesh. For a series of n1 to n2 triangles, the input should
+  have at least about 2 n2 triangles (the window study went down to 1.8 n2) and no more than
+  about 30 n1.
+
 **`sesmesh -C n1,n2,K`** coarsens the mesh it has just made in the same way, with no `.c3p`
 round trip.
 - **Targets.** They are rcoal's: n1, then steps of (n2 − n1)/(K − 1) up to n2.
