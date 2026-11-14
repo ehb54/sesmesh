@@ -6,6 +6,7 @@
 //    output is a closed, consistently oriented manifold of the input's topology, with no
 //    triangle of zero area, and fewer triangles at larger edge fractions.
 // 3. find_edgfrac reaches its target within 1%.
+// 4. c3p_surface gives exactly the surface rcoal reads from the files write_c3p writes.
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -16,7 +17,9 @@
 
 #include "clean.h"
 #include "coalesce.h"
+#include "io.h"
 #include "mesh.h"
+#include "rcoal_io.h"
 #include "ses.h"
 
 using namespace sesmesh;
@@ -100,6 +103,21 @@ void test_cluster( unsigned seed, int natoms, double box, double p, double h ) {
    MeshCheck c0 = check_mesh( mesh );
    CHECK( c0.closed_manifold(), "cluster %u: input not a closed manifold", seed );
    rcoal::Surface s = surface( mesh );
+
+   // c3p_surface is what rcoal reads from write_c3p's files.
+   {
+      const std::string base = "coalesce_test_c3p_" + std::to_string( seed );
+      write_c3p( base, "test", mesh, natoms, p, c0.area, c0.volume );
+      rcoal::Surface f = rcoal::read_c3p( base + ".c3p" );
+      rcoal::Surface m = c3p_surface( mesh, c0.area, c0.volume );
+      std::remove( ( base + ".c3p" ).c_str() );
+      std::remove( ( base + ".c3v" ).c_str() );
+      bool same = f.x == m.x && f.edges == m.edges && f.tri == m.tri && f.comp == m.comp &&
+                  f.begin_area == m.begin_area && f.true_area == m.true_area && f.true_vol == m.true_vol;
+      std::printf( "cluster %u: c3p_surface %s what rcoal reads from write_c3p's files\n", seed,
+                   same ? "is" : "is NOT" );
+      CHECK( same, "cluster %u: c3p_surface differs from read_c3p of write_c3p", seed );
+   }
 
    int last = int( s.tri.size() ) + 1;
    for ( double e : { 0.5, 0.8, 1.2, 2.0 } ) {
