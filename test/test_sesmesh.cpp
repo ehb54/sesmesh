@@ -10,6 +10,9 @@
 // 5. The clean-up keeps every mesh a closed manifold of the same topology, hardly changes its
 //    area and volume, and leaves no angle under 10 degrees.
 // 6. The writers: what they write reads back.
+// 7. Progress reports and stop requests: the reports climb through [0, 1] and leave the meshes
+//    as they are; a stop request ends each long call early with Cancelled, and the next call is
+//    as before.  With one thread and with several.
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -557,6 +560,144 @@ void test_writers() {
 
 }  // namespace
 
+// Records the progress reports of one call, and asks it to stop once a report reaches stop_at.
+struct Recorder {
+   std::vector<double> f;
+   std::vector<std::string> stages;
+   double stop_at = 2;
+   bool asked = false;
+   int after_asking = 0;   // reports after the stop request (there should be none)
+   ProgressFn fn() {
+      return [this]( double x, const char* stage ) {
+         if ( asked ) {
+            ++after_asking;
+         }
+         f.push_back( x );
+         stages.push_back( stage );
+         if ( x >= stop_at ) {
+            asked = true;
+            return false;
+         }
+         return true;
+      };
+   }
+};
+
+bool same_mesh( const Mesh& a, const Mesh& b ) {
+   if ( a.x.size() != b.x.size() || a.tri != b.tri ) {
+      return false;
+   }
+   for ( size_t v = 0; v < a.x.size(); ++v ) {
+      if ( a.x[v].x != b.x[v].x || a.x[v].y != b.x[v].y || a.x[v].z != b.x[v].z ) {
+         return false;
+      }
+   }
+   return true;
+}
+
+void check_reports( const char* call, int nthreads, const Recorder& r ) {
+   CHECK( r.f.size() >= 10, "%s (%d threads): only %zu progress reports", call, nthreads, r.f.size() );
+   for ( size_t k = 0; k < r.f.size(); ++k ) {
+      CHECK( r.f[k] >= 0 && r.f[k] <= 1, "%s (%d threads): progress %g outside [0, 1]", call, nthreads, r.f[k] );
+      if ( k > 0 ) {
+         CHECK( r.f[k] >= r.f[k - 1], "%s (%d threads): progress goes back from %g to %g (%s)", call, nthreads,
+                r.f[k - 1], r.f[k], r.stages[k].c_str() );
+      }
+   }
+}
+
+void test_progress() {
+   std::mt19937 rng( 17 );
+   Uniform pos( 0, 12 ), rad( 1.0, 2.0 );
+   std::vector<Ball> atoms;
+   for ( int n = 0; n < 50; ++n ) {
+      atoms.push_back( { pos.vec( rng ), rad( rng ) } );
+   }
+   SesModel model( atoms, 1.4 );
+   const double h = 0.35;
+   const int threads_before = threads();
+   set_progress_interval( 0 );   // a report after every chunk, however fast the machine
+   for ( int nthreads : { 1, 4 } ) {
+      set_threads( nthreads );
+      MeshOptions opt;
+      opt.h = h;
+      CleanOptions copt;
+      BuildInfo bi;
+      CleanInfo ci;
+      Mesh raw0, clean0;
+      build_mesh( model, opt, raw0, bi );
+      clean0 = raw0;
+      clean_mesh( model, h, copt, clean0, ci );
+      MeshCheck k0 = check_mesh( clean0 );
+
+      Recorder rb, rc, rk;
+      Mesh raw1, clean1;
+      opt.progress = rb.fn();
+      build_mesh( model, opt, raw1, bi );
+      clean1 = raw1;
+      copt.progress = rc.fn();
+      clean_mesh( model, h, copt, clean1, ci );
+      MeshCheck k1 = check_mesh( clean1, rk.fn() );
+      std::printf( "progress (%d threads): %zu, %zu and %zu reports from build_mesh, clean_mesh and check_mesh\n",
+                   nthreads, rb.f.size(), rc.f.size(), rk.f.size() );
+      CHECK( same_mesh( raw0, raw1 ), "progress (%d threads): build_mesh made another mesh", nthreads );
+      CHECK( same_mesh( clean0, clean1 ), "progress (%d threads): clean_mesh made another mesh", nthreads );
+      CHECK( k0.area == k1.area && k0.volume == k1.volume && k0.edges == k1.edges && k0.euler == k1.euler &&
+                k0.components.size() == k1.components.size(),
+             "progress (%d threads): check_mesh found something else", nthreads );
+      check_reports( "build_mesh", nthreads, rb );
+      check_reports( "clean_mesh", nthreads, rc );
+      check_reports( "check_mesh", nthreads, rk );
+      CHECK( std::find( rb.stages.begin(), rb.stages.end(), "vertices" ) != rb.stages.end(),
+             "progress (%d threads): build_mesh reported no vertices stage", nthreads );
+      CHECK( std::find( rc.stages.begin(), rc.stages.end(), "flips" ) != rc.stages.end(),
+             "progress (%d threads): clean_mesh reported no flips stage", nthreads );
+
+      // Stop requests partway: in the vertices, the first pass's flips and the edge check.
+      const char* calls[3] = { "build_mesh", "clean_mesh", "check_mesh" };
+      const double stop_at[3] = { 0.5, 0.3, 0.5 };
+      for ( int call = 0; call < 3; ++call ) {
+         Recorder r;
+         r.stop_at = stop_at[call];
+         bool cancelled = false;
+         try {
+            if ( call == 0 ) {
+               MeshOptions o;
+               o.h = h;
+               o.progress = r.fn();
+               Mesh m;
+               build_mesh( model, o, m, bi );
+            } else if ( call == 1 ) {
+               CleanOptions o;
+               o.progress = r.fn();
+               Mesh m = raw0;
+               clean_mesh( model, h, o, m, ci );
+            } else {
+               check_mesh( clean0, r.fn() );
+            }
+         } catch ( const Cancelled& ) {
+            cancelled = true;
+         }
+         CHECK( cancelled, "progress (%d threads): %s did not stop", nthreads, calls[call] );
+         CHECK( r.after_asking == 0, "progress (%d threads): %s reported %d time(s) after the stop request", nthreads,
+                calls[call], r.after_asking );
+         CHECK( !r.f.empty() && r.f.back() >= stop_at[call] && r.f.back() < 1,
+                "progress (%d threads): %s stopped at %g", nthreads, calls[call], r.f.empty() ? -1.0 : r.f.back() );
+      }
+      // The calls after a stop are as before.
+      Mesh raw2, clean2;
+      opt.progress = ProgressFn();
+      build_mesh( model, opt, raw2, bi );
+      clean2 = raw2;
+      copt.progress = ProgressFn();
+      clean_mesh( model, h, copt, clean2, ci );
+      CHECK( same_mesh( raw0, raw2 ) && same_mesh( clean0, clean2 ),
+             "progress (%d threads): the meshes after a stop request differ", nthreads );
+   }
+   set_threads( threads_before );
+   set_progress_interval( 0.1 );
+}
+
 int main() {
    test_one_sphere_function();
    test_cluster_function( 7, 12, 6, 1.4 );
@@ -591,6 +732,7 @@ int main() {
    test_cluster_mesh( 11, 30, 9, 1.4, 0.12 );
    test_cluster_mesh( 13, 60, 12, 1.4, 0.2 );
    test_writers();
+   test_progress();
 
    if ( failures ) {
       std::printf( "%d check(s) FAILED\n", failures );

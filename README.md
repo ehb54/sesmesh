@@ -332,6 +332,16 @@ On one thread sesmesh is slower: 1A3N at 0.25 Å takes 19 s raw and 40 s cleaned
 for NanoShaper. Its time goes into evaluating the exact surface function, about 12 million
 times.
 
+## In a program
+
+`build_mesh`, `clean_mesh` and `check_mesh` (`src/mesh.h`, `src/clean.h`) can report their
+progress to a function `bool( double fraction, const char* stage )`, given as
+`MeshOptions::progress`, `CleanOptions::progress` or `check_mesh`'s second argument. It is
+called on the calling thread, about every 0.1 s (`set_progress_interval` changes that), with an
+estimate of the fraction done. Returning false stops the call: its loops end at their next chunk
+and it throws `sesmesh::Cancelled`. Without a function nothing changes, and with one the meshes
+are the same. US-SOMO uses this for its progress bar and Stop button.
+
 ## Limitations
 
 - **Fine-scale topology.** Thin sheets of solid between nearly touching probe positions can
